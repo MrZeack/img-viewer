@@ -8,8 +8,6 @@ use std::thread;
 #[derive(Debug, Clone)]
 pub struct LoadedImage {
     pub image: ColorImage,
-    pub original_size: (usize, usize),
-    pub file_size: u64,
 }
 
 pub struct ImageLoader {
@@ -93,16 +91,10 @@ fn load_image_sync(request: LoadRequest) -> Result<LoadedImage> {
         img
     };
     
-    let original_size = (img.width() as usize, img.height() as usize);
-    let file_size = data.len() as u64;
-    
-    // Convert to ColorImage for egui
     let color_image = dynamic_image_to_color_image(&img);
     
     Ok(LoadedImage {
         image: color_image,
-        original_size,
-        file_size,
     })
 }
 

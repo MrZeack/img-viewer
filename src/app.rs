@@ -2,13 +2,13 @@ use eframe::egui;
 use egui::{CentralPanel, Context, SidePanel, TopBottomPanel, Key};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc;
 use std::time::Instant;
 
 use crate::cache::{create_image_cache, create_metadata_cache, CompositionCache, ImageCache, MetadataCache};
 use crate::composition::{generate_composition_lines, CompositionType};
 use crate::image_loader::{get_image_files, ImageLoader, ImagePreloader};
-use crate::metadata_simple::{extract_metadata, format_file_size, ImageMetadata};
+use crate::metadata_loader::MetadataLoader;
+use crate::metadata_simple::{format_file_size, ImageMetadata};
 
 pub struct ImageViewerApp {
     // Core state
@@ -20,7 +20,6 @@ pub struct ImageViewerApp {
     current_image: Option<egui::TextureHandle>,
     zoom_factor: f32,
     image_position: egui::Vec2,
-    drag_start: Option<egui::Pos2>,
     
     // Caches
     image_cache: ImageCache,
@@ -34,8 +33,7 @@ pub struct ImageViewerApp {
     
     // Metadata
     current_metadata: Option<ImageMetadata>,
-    metadata_receiver: Option<mpsc::Receiver<(PathBuf, anyhow::Result<ImageMetadata>)>>,
-    metadata_sender: mpsc::Sender<(PathBuf, anyhow::Result<ImageMetadata>)>,
+    metadata_loader: MetadataLoader,
     
     // Composition lines
     show_composition: bool,
@@ -70,18 +68,6 @@ impl ImageViewerApp {
         let image_cache = create_image_cache(100);
         let preloader = ImagePreloader::new(image_cache.clone());
         
-        let (metadata_tx, metadata_rx) = mpsc::channel();
-        
-        // Start metadata extraction for first image
-        if !image_files.is_empty() {
-            let first_image = image_files[0].clone();
-            let tx = metadata_tx.clone();
-            std::thread::spawn(move || {
-                let metadata = extract_metadata(&first_image);
-                let _ = tx.send((first_image, metadata));
-            });
-        }
-        
         // Create directories for image management
         std::fs::create_dir_all(current_dir.join("best")).ok();
         std::fs::create_dir_all(current_dir.join("worse")).ok();
@@ -94,7 +80,6 @@ impl ImageViewerApp {
             current_image: None,
             zoom_factor: 1.0,
             image_position: egui::Vec2::ZERO,
-            drag_start: None,
             image_cache,
             metadata_cache: create_metadata_cache(50),
             composition_cache: CompositionCache::new(30),
@@ -102,8 +87,7 @@ impl ImageViewerApp {
             preloader,
             loading_requests: HashMap::new(),
             current_metadata: None,
-            metadata_receiver: Some(metadata_rx),
-            metadata_sender: metadata_tx.clone(),
+            metadata_loader: MetadataLoader::new(),
             show_composition: false,
             composition_type: CompositionType::RuleOfThirds,
             show_sidebar: true,
@@ -156,11 +140,7 @@ impl ImageViewerApp {
         
         // Request metadata extraction
         let path = current_path.clone();
-        let tx = self.metadata_sender.clone();
-        std::thread::spawn(move || {
-            let metadata = extract_metadata(&path);
-            let _ = tx.send((path, metadata));
-        });
+        self.metadata_loader.load_metadata(&path);
     }
     
     fn handle_keyboard_input(&mut self, ctx: &Context) {
@@ -224,25 +204,29 @@ impl ImageViewerApp {
         }
         
         let current_path = self.image_files[self.current_index].clone();
-        let dest_dir = self.current_dir.join("best");
-        let dest_path = dest_dir.join(current_path.file_name().unwrap());
-        
-        if std::fs::rename(&current_path, &dest_path).is_ok() {
-            self.last_moved = Some((current_path, dest_path, "best".to_string()));
-            self.image_files.remove(self.current_index);
+        if let Some(file_name) = current_path.file_name() {
+            let dest_dir = self.current_dir.join("best");
+            let dest_path = dest_dir.join(file_name);
             
-            if self.current_index >= self.image_files.len() && !self.image_files.is_empty() {
-                self.current_index = 0;
-            }
-            
-            self.set_status_message("Moved to best/", 3.0);
-            
-            // Load next image automatically
-            if !self.image_files.is_empty() {
-                self.load_current_image(ctx);
+            if std::fs::rename(&current_path, &dest_path).is_ok() {
+                self.last_moved = Some((current_path, dest_path, "best".to_string()));
+                self.image_files.remove(self.current_index);
+                
+                if self.current_index >= self.image_files.len() && !self.image_files.is_empty() {
+                    self.current_index = 0;
+                }
+                
+                self.set_status_message("Moved to best/", 3.0);
+                
+                // Load next image automatically
+                if !self.image_files.is_empty() {
+                    self.load_current_image(ctx);
+                }
+            } else {
+                self.set_status_message("Error moving image", 3.0);
             }
         } else {
-            self.set_status_message("Error moving image", 3.0);
+            self.set_status_message("Invalid file name", 3.0);
         }
     }
     
@@ -252,25 +236,29 @@ impl ImageViewerApp {
         }
         
         let current_path = self.image_files[self.current_index].clone();
-        let dest_dir = self.current_dir.join("worse");
-        let dest_path = dest_dir.join(current_path.file_name().unwrap());
-        
-        if std::fs::rename(&current_path, &dest_path).is_ok() {
-            self.last_moved = Some((current_path, dest_path, "worse".to_string()));
-            self.image_files.remove(self.current_index);
+        if let Some(file_name) = current_path.file_name() {
+            let dest_dir = self.current_dir.join("worse");
+            let dest_path = dest_dir.join(file_name);
             
-            if self.current_index >= self.image_files.len() && !self.image_files.is_empty() {
-                self.current_index = 0;
-            }
-            
-            self.set_status_message("Moved to worse/", 3.0);
-            
-            // Load next image automatically
-            if !self.image_files.is_empty() {
-                self.load_current_image(ctx);
+            if std::fs::rename(&current_path, &dest_path).is_ok() {
+                self.last_moved = Some((current_path, dest_path, "worse".to_string()));
+                self.image_files.remove(self.current_index);
+                
+                if self.current_index >= self.image_files.len() && !self.image_files.is_empty() {
+                    self.current_index = 0;
+                }
+                
+                self.set_status_message("Moved to worse/", 3.0);
+                
+                // Load next image automatically
+                if !self.image_files.is_empty() {
+                    self.load_current_image(ctx);
+                }
+            } else {
+                self.set_status_message("Error moving image", 3.0);
             }
         } else {
-            self.set_status_message("Error moving image", 3.0);
+            self.set_status_message("Invalid file name", 3.0);
         }
     }
     
@@ -280,25 +268,29 @@ impl ImageViewerApp {
         }
         
         let current_path = self.image_files[self.current_index].clone();
-        let dest_dir = self.current_dir.join("deleted");
-        let dest_path = dest_dir.join(current_path.file_name().unwrap());
-        
-        if std::fs::rename(&current_path, &dest_path).is_ok() {
-            self.last_moved = Some((current_path, dest_path, "deleted".to_string()));
-            self.image_files.remove(self.current_index);
+        if let Some(file_name) = current_path.file_name() {
+            let dest_dir = self.current_dir.join("deleted");
+            let dest_path = dest_dir.join(file_name);
             
-            if self.current_index >= self.image_files.len() && !self.image_files.is_empty() {
-                self.current_index = 0;
-            }
-            
-            self.set_status_message("Moved to deleted/", 3.0);
-            
-            // Load next image automatically
-            if !self.image_files.is_empty() {
-                self.load_current_image(ctx);
+            if std::fs::rename(&current_path, &dest_path).is_ok() {
+                self.last_moved = Some((current_path, dest_path, "deleted".to_string()));
+                self.image_files.remove(self.current_index);
+                
+                if self.current_index >= self.image_files.len() && !self.image_files.is_empty() {
+                    self.current_index = 0;
+                }
+                
+                self.set_status_message("Moved to deleted/", 3.0);
+                
+                // Load next image automatically
+                if !self.image_files.is_empty() {
+                    self.load_current_image(ctx);
+                }
+            } else {
+                self.set_status_message("Error deleting image", 3.0);
             }
         } else {
-            self.set_status_message("Error deleting image", 3.0);
+            self.set_status_message("Invalid file name", 3.0);
         }
     }
     
@@ -332,20 +324,17 @@ impl ImageViewerApp {
         }
     }
     
-    fn update_metadata(&mut self) {
-        // Check for received metadata
-        if let Some(rx) = &mut self.metadata_receiver {
-            while let Ok((path, metadata_result)) = rx.try_recv() {
-                if let Ok(metadata) = metadata_result {
-                    // Update current metadata if it's for the current image
-                    if !self.image_files.is_empty() && path == self.image_files[self.current_index] {
-                        self.current_metadata = Some(metadata.clone());
-                    }
-                    
-                    // Store in cache
-                    let path_str = path.to_string_lossy().to_string();
-                    self.metadata_cache.lock().unwrap().put(path_str, metadata);
+    fn update_metadata_loading(&mut self) {
+        while let Some(result) = self.metadata_loader.try_recv_result() {
+            if let Ok(metadata) = result.result {
+                // Update current metadata if it's for the current image
+                if !self.image_files.is_empty() && result.path == self.image_files[self.current_index] {
+                    self.current_metadata = Some(metadata.clone());
                 }
+                
+                // Store in cache
+                let path_str = result.path.to_string_lossy().to_string();
+                self.metadata_cache.lock().unwrap().put(path_str, metadata);
             }
         }
     }
@@ -449,7 +438,7 @@ impl eframe::App for ImageViewerApp {
         self.update_image_loading(ctx);
         
         // Process metadata updates
-        self.update_metadata();
+        self.update_metadata_loading();
         
         // Update status message timeout
         if let Some((_, expiry)) = &self.status_message {
@@ -457,6 +446,29 @@ impl eframe::App for ImageViewerApp {
                 self.status_message = None;
             }
         }
+
+        TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Open Folder...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            self.current_dir = path;
+                            self.image_files = get_image_files(&self.current_dir).unwrap_or_default();
+                            self.current_index = 0;
+                            self.current_image = None;
+                            self.current_metadata = None;
+                            if !self.image_files.is_empty() {
+                                self.load_current_image(ctx);
+                            }
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.button("Exit").clicked() {
+                        std::process::exit(0);
+                    }
+                });
+            });
+        });
         
         // Status bar
         TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
@@ -512,15 +524,29 @@ impl eframe::App for ImageViewerApp {
                             ui.group(|ui| {
                                 ui.strong("ARCHIVO");
                                 ui.separator();
-                                ui.label(format!("Nombre: {}", metadata.file_info.name));
-                                ui.label(format!("Tamaño: {}", format_file_size(metadata.file_info.size)));
-                                if let Some(created) = &metadata.file_info.created {
-                                    ui.label(format!("Creado: {}", created.format("%Y-%m-%d %H:%M:%S")));
-                                }
-                                if let Some(modified) = &metadata.file_info.modified {
-                                    ui.label(format!("Modificado: {}", modified.format("%Y-%m-%d %H:%M:%S")));
-                                }
-                                ui.label(format!("Ruta: {}", metadata.file_info.path));
+                                egui::Grid::new("file_info_grid").show(ui, |ui| {
+                                    ui.label("Nombre:");
+                                    ui.label(&metadata.file_info.name);
+                                    ui.end_row();
+
+                                    ui.label("Tamaño:");
+                                    ui.label(format_file_size(metadata.file_info.size));
+                                    ui.end_row();
+
+                                    if let Some(created) = &metadata.file_info.created {
+                                        ui.label("Creado:");
+                                        ui.label(created.format("%Y-%m-%d %H:%M:%S").to_string());
+                                        ui.end_row();
+                                    }
+                                    if let Some(modified) = &metadata.file_info.modified {
+                                        ui.label("Modificado:");
+                                        ui.label(modified.format("%Y-%m-%d %H:%M:%S").to_string());
+                                        ui.end_row();
+                                    }
+                                    ui.label("Ruta:");
+                                    ui.label(&metadata.file_info.path);
+                                    ui.end_row();
+                                });
                             });
                             
                             ui.add_space(10.0);
@@ -529,10 +555,23 @@ impl eframe::App for ImageViewerApp {
                             ui.group(|ui| {
                                 ui.strong("IMAGEN");
                                 ui.separator();
-                                ui.label(format!("Dimensiones: {}×{}", metadata.image_info.dimensions.0, metadata.image_info.dimensions.1));
-                                ui.label(format!("Megapíxeles: {:.1} MP", metadata.image_info.megapixels));
-                                ui.label(format!("Relación: {}", metadata.image_info.aspect_ratio));
-                                ui.label(format!("Formato: {}", metadata.image_info.format));
+                                egui::Grid::new("image_info_grid").show(ui, |ui| {
+                                    ui.label("Dimensiones:");
+                                    ui.label(format!("{}×{}", metadata.image_info.dimensions.0, metadata.image_info.dimensions.1));
+                                    ui.end_row();
+
+                                    ui.label("Megapíxeles:");
+                                    ui.label(format!("{:.1} MP", metadata.image_info.megapixels));
+                                    ui.end_row();
+
+                                    ui.label("Relación:");
+                                    ui.label(&metadata.image_info.aspect_ratio);
+                                    ui.end_row();
+
+                                    ui.label("Formato:");
+                                    ui.label(&metadata.image_info.format);
+                                    ui.end_row();
+                                });
                             });
                             
                             ui.add_space(10.0);
@@ -542,60 +581,97 @@ impl eframe::App for ImageViewerApp {
                                 ui.group(|ui| {
                                     ui.strong("EXIF");
                                     ui.separator();
-                                    if let Some(make) = &exif.camera_make {
-                                        ui.label(format!("Marca: {}", make));
-                                    }
-                                    if let Some(model) = &exif.camera_model {
-                                        ui.label(format!("Modelo: {}", model));
-                                    }
-                                    if let Some(date) = &exif.date_taken {
-                                        ui.label(format!("Fecha: {}", date.format("%Y-%m-%d %H:%M:%S")));
-                                    }
-                                    if let Some(shutter) = &exif.shutter_speed {
-                                        ui.label(format!("Velocidad: {}", shutter));
-                                    }
-                                    if let Some(aperture) = &exif.aperture {
-                                        ui.label(format!("Apertura: {}", aperture));
-                                    }
-                                    if let Some(iso) = &exif.iso {
-                                        ui.label(format!("ISO: {}", iso));
-                                    }
-                                    if let Some(focal) = &exif.focal_length {
-                                        ui.label(format!("Focal: {}", focal));
-                                    }
-                                    if let Some(lens) = &exif.lens_model {
-                                        ui.label(format!("Lente: {}", lens));
-                                    }
-                                    if let Some(flash) = &exif.flash {
-                                        ui.label(format!("Flash: {}", flash));
-                                    }
-                                    if let Some(color_space) = &exif.color_space {
-                                        ui.label(format!("Espacio de color: {}", color_space));
-                                    }
-                                    if let Some(metering_mode) = &exif.metering_mode {
-                                        ui.label(format!("Modo de medición: {}", metering_mode));
-                                    }
-                                    if let Some(exposure_bias) = &exif.exposure_bias_value {
-                                        ui.label(format!("Compensación de exposición: {}", exposure_bias));
-                                    }
-                                    if let Some(aperture_value) = &exif.aperture_value {
-                                        ui.label(format!("Valor de apertura: {}", aperture_value));
-                                    }
-                                    if let Some(sensitivity_type) = &exif.sensitivity_type {
-                                        ui.label(format!("Tipo de sensibilidad: {}", sensitivity_type));
-                                    }
-                                    if let Some(exposure_program) = &exif.exposure_program {
-                                        ui.label(format!("Programa de exposición: {}", exposure_program));
-                                    }
-                                    if let Some(orientation) = &exif.orientation {
-                                        ui.label(format!("Orientación: {}", orientation));
-                                    }
-                                    if let Some(gps) = &exif.gps_location {
-                                        ui.label(format!("GPS: {}", gps));
-                                    }
-                                    if exif.camera_make.is_none() && exif.camera_model.is_none() && exif.date_taken.is_none() && exif.shutter_speed.is_none() && exif.aperture.is_none() && exif.iso.is_none() && exif.focal_length.is_none() && exif.lens_model.is_none() && exif.gps_location.is_none() {
-                                        ui.label("No hay información EXIF disponible");
-                                    }
+                                    egui::Grid::new("exif_info_grid").show(ui, |ui| {
+                                        if let Some(make) = &exif.camera_make {
+                                            ui.label("Marca:");
+                                            ui.label(make);
+                                            ui.end_row();
+                                        }
+                                        if let Some(model) = &exif.camera_model {
+                                            ui.label("Modelo:");
+                                            ui.label(model);
+                                            ui.end_row();
+                                        }
+                                        if let Some(date) = &exif.date_taken {
+                                            ui.label("Fecha:");
+                                            ui.label(date.format("%Y-%m-%d %H:%M:%S").to_string());
+                                            ui.end_row();
+                                        }
+                                        if let Some(shutter) = &exif.shutter_speed {
+                                            ui.label("Velocidad:");
+                                            ui.label(shutter);
+                                            ui.end_row();
+                                        }
+                                        if let Some(aperture) = &exif.aperture {
+                                            ui.label("Apertura:");
+                                            ui.label(aperture);
+                                            ui.end_row();
+                                        }
+                                        if let Some(iso) = &exif.iso {
+                                            ui.label("ISO:");
+                                            ui.label(iso.to_string());
+                                            ui.end_row();
+                                        }
+                                        if let Some(focal) = &exif.focal_length {
+                                            ui.label("Focal:");
+                                            ui.label(focal);
+                                            ui.end_row();
+                                        }
+                                        if let Some(lens) = &exif.lens_model {
+                                            ui.label("Lente:");
+                                            ui.label(lens);
+                                            ui.end_row();
+                                        }
+                                        if let Some(flash) = &exif.flash {
+                                            ui.label("Flash:");
+                                            ui.label(flash);
+                                            ui.end_row();
+                                        }
+                                        if let Some(color_space) = &exif.color_space {
+                                            ui.label("Espacio de color:");
+                                            ui.label(color_space);
+                                            ui.end_row();
+                                        }
+                                        if let Some(metering_mode) = &exif.metering_mode {
+                                            ui.label("Modo de medición:");
+                                            ui.label(metering_mode);
+                                            ui.end_row();
+                                        }
+                                        if let Some(exposure_bias) = &exif.exposure_bias_value {
+                                            ui.label("Comp. exposición:");
+                                            ui.label(exposure_bias);
+                                            ui.end_row();
+                                        }
+                                        if let Some(aperture_value) = &exif.aperture_value {
+                                            ui.label("Valor de apertura:");
+                                            ui.label(aperture_value);
+                                            ui.end_row();
+                                        }
+                                        if let Some(sensitivity_type) = &exif.sensitivity_type {
+                                            ui.label("Tipo de sensibilidad:");
+                                            ui.label(sensitivity_type);
+                                            ui.end_row();
+                                        }
+                                        if let Some(exposure_program) = &exif.exposure_program {
+                                            ui.label("Programa Exp.:");
+                                            ui.label(exposure_program);
+                                            ui.end_row();
+                                        }
+                                        if let Some(orientation) = &exif.orientation {
+                                            ui.label("Orientación:");
+                                            ui.label(orientation);
+                                            ui.end_row();
+                                        }
+                                        if let Some(gps) = &exif.gps_location {
+                                            ui.label("GPS:");
+                                            ui.label(gps);
+                                            ui.end_row();
+                                        }
+                                        if exif.camera_make.is_none() && exif.camera_model.is_none() && exif.date_taken.is_none() && exif.shutter_speed.is_none() && exif.aperture.is_none() && exif.iso.is_none() && exif.focal_length.is_none() && exif.lens_model.is_none() && exif.gps_location.is_none() {
+                                            ui.label("No hay información EXIF disponible");
+                                            ui.end_row();
+                                        }
+                                    });
                                 });
                             }
                         } else {

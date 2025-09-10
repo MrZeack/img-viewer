@@ -68,7 +68,6 @@ impl CompositionType {
     }
 }
 
-const PHI: f32 = 1.618;
 const PHI_INV: f32 = 0.618;
 
 pub fn generate_composition_lines(

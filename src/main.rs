@@ -4,6 +4,7 @@ mod app;
 mod cache;
 mod composition;
 mod image_loader;
+mod metadata_loader;
 mod metadata_simple;
 
 use app::ImageViewerApp;

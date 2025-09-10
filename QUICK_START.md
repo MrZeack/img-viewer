@@ -7,10 +7,10 @@ Get the high-performance Rust image viewer up and running in minutes!
 ### Linux/macOS - Full Installation
 ```bash
 # Complete setup with Rust installation, desktop integration, and maximum performance
-./install_script.sh --install-rust --desktop --native
+./install.sh --install-rust --desktop --native
 
 # Or basic installation (if you already have Rust)
-./install_script.sh --native
+./install.sh --native
 ```
 
 ### Ubuntu/Debian Users
@@ -147,7 +147,7 @@ source ~/.bashrc
 **"Permission denied"**
 ```bash
 # Make scripts executable
-chmod +x build.sh install_script.sh
+chmod +x build.sh install.sh
 ```
 
 ### Performance Issues
