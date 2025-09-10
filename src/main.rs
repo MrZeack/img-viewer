@@ -10,10 +10,11 @@ mod metadata_simple;
 use app::ImageViewerApp;
 
 fn main() -> Result<(), eframe::Error> {
+    let version = env!("CARGO_PKG_VERSION");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 900.0])
-            .with_title("Image Viewer")
+            .with_title(format!("Image Viewer v{}", version))
             .with_maximize_button(true),
         ..Default::default()
     };
