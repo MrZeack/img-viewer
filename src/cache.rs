@@ -3,18 +3,18 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use egui::ColorImage;
 
-pub type ImageCache = Arc<Mutex<LruCache<String, ColorImage>>>;
+pub type ImageCache = Arc<Mutex<LruCache<String, Arc<ColorImage>>>>;
 pub type MetadataCache = Arc<Mutex<LruCache<String, crate::metadata_simple::ImageMetadata>>>;
 
 pub fn create_image_cache(capacity: usize) -> ImageCache {
     Arc::new(Mutex::new(
-        LruCache::new(NonZeroUsize::new(capacity).unwrap())
+        LruCache::new(NonZeroUsize::new(capacity).expect("Cache capacity must be non-zero"))
     ))
 }
 
 pub fn create_metadata_cache(capacity: usize) -> MetadataCache {
     Arc::new(Mutex::new(
-        LruCache::new(NonZeroUsize::new(capacity).unwrap())
+        LruCache::new(NonZeroUsize::new(capacity).expect("Cache capacity must be non-zero"))
     ))
 }
 
@@ -34,7 +34,7 @@ impl CompositionCache {
     pub fn new(capacity: usize) -> Self {
         Self {
             cache: Arc::new(Mutex::new(
-                LruCache::new(NonZeroUsize::new(capacity).unwrap())
+                LruCache::new(NonZeroUsize::new(capacity).expect("Cache capacity must be non-zero"))
             ))
         }
     }

@@ -1,15 +1,19 @@
 use eframe::egui;
 
+#[path = "app.rs"]
 mod app;
 mod cache;
 mod composition;
 mod image_loader;
 mod metadata_loader;
 mod metadata_simple;
+mod event;
+mod config;
 
 use app::ImageViewerApp;
 
 fn main() -> Result<(), eframe::Error> {
+    let config = config::load_config();
     let version = env!("CARGO_PKG_VERSION");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -22,13 +26,13 @@ fn main() -> Result<(), eframe::Error> {
     eframe::run_native(
         "Image Viewer",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             // Configure UI style for dark theme
             let mut style = (*cc.egui_ctx.style()).clone();
             style.visuals = egui::Visuals::dark();
             cc.egui_ctx.set_style(style);
 
-            Ok(Box::new(ImageViewerApp::new(cc)))
+            Ok(Box::new(ImageViewerApp::new(cc, config)))
         }),
     )
 }

@@ -1,9 +1,12 @@
+use rayon::prelude::*;
 use anyhow::Result;
 use egui::ColorImage;
 use image::{DynamicImage, ImageFormat};
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
+use crate::event::{EventBus, ViewerEvent};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct LoadedImage {
@@ -12,7 +15,6 @@ pub struct LoadedImage {
 
 pub struct ImageLoader {
     sender: mpsc::Sender<LoadRequest>,
-    receiver: mpsc::Receiver<LoadResult>,
 }
 
 #[derive(Debug)]
@@ -22,31 +24,29 @@ struct LoadRequest {
     high_quality: bool,
 }
 
-#[derive(Debug)]
-pub struct LoadResult {
-    pub path: std::path::PathBuf,
-    pub result: Result<LoadedImage>,
-}
-
 impl ImageLoader {
-    pub fn new() -> Self {
+    pub fn new(num_threads: usize, event_bus: EventBus) -> Self {
         let (tx, rx) = mpsc::channel::<LoadRequest>();
-        let (result_tx, result_rx) = mpsc::channel::<LoadResult>();
         
-        // Spawn background thread pool for image loading
         thread::spawn(move || {
-            while let Ok(request) = rx.recv() {
-                let result_tx = result_tx.clone();
-                let path = request.path.clone();
-                
-                let result = load_image_sync(request);
-                let _ = result_tx.send(LoadResult { path, result });
-            }
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(num_threads)
+                .build()
+                .expect("Failed to build image loader thread pool");
+
+            pool.install(|| {
+                rx.into_iter().par_bridge().for_each(|request| {
+                    let path = request.path.clone();
+                    if let Ok(loaded_image) = load_image_sync(request) {
+                        let image_arc = Arc::new(loaded_image.image);
+                        event_bus.publish(ViewerEvent::ImageLoaded(path, image_arc));
+                    }
+                });
+            });
         });
         
         Self {
             sender: tx,
-            receiver: result_rx,
         }
     }
 
@@ -57,10 +57,6 @@ impl ImageLoader {
             high_quality,
         };
         let _ = self.sender.send(request);
-    }
-
-    pub fn try_recv_result(&self) -> Option<LoadResult> {
-        self.receiver.try_recv().ok()
     }
 }
 
@@ -168,13 +164,15 @@ pub fn get_image_files(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
 pub struct ImagePreloader {
     loader: ImageLoader,
     cache: crate::cache::ImageCache,
+    preload_distance: usize,
 }
 
 impl ImagePreloader {
-    pub fn new(cache: crate::cache::ImageCache) -> Self {
+    pub fn new(cache: crate::cache::ImageCache, preload_distance: usize, event_bus: EventBus) -> Self {
         Self {
-            loader: ImageLoader::new(),
+            loader: ImageLoader::new(2, event_bus), // Preloader uses a small number of threads
             cache,
+            preload_distance,
         }
     }
     
@@ -182,19 +180,23 @@ impl ImagePreloader {
         let current_idx = all_files.iter().position(|p| p == current_path);
         
         if let Some(idx) = current_idx {
-            // Preload next image
-            if idx + 1 < all_files.len() {
-                let next_path = &all_files[idx + 1];
-                if !self.is_cached(next_path) {
-                    self.loader.load_image(next_path, Some((1024, 1024)), false);
+            // Preload next images
+            for i in 1..=self.preload_distance {
+                if idx + i < all_files.len() {
+                    let next_path = &all_files[idx + i];
+                    if !self.is_cached(next_path) {
+                        self.loader.load_image(next_path, Some((1024, 1024)), false);
+                    }
                 }
             }
             
-            // Preload previous image
-            if idx > 0 {
-                let prev_path = &all_files[idx - 1];
-                if !self.is_cached(prev_path) {
-                    self.loader.load_image(prev_path, Some((1024, 1024)), false);
+            // Preload previous images
+            for i in 1..=self.preload_distance {
+                if idx >= i {
+                    let prev_path = &all_files[idx - i];
+                    if !self.is_cached(prev_path) {
+                        self.loader.load_image(prev_path, Some((1024, 1024)), false);
+                    }
                 }
             }
         }
@@ -203,14 +205,5 @@ impl ImagePreloader {
     fn is_cached(&self, path: &Path) -> bool {
         let key = path.to_string_lossy().to_string();
         self.cache.lock().unwrap().contains(&key)
-    }
-    
-    pub fn update(&self) {
-        while let Some(result) = self.loader.try_recv_result() {
-            if let Ok(loaded) = result.result {
-                let key = result.path.to_string_lossy().to_string();
-                self.cache.lock().unwrap().put(key, loaded.image);
-            }
-        }
     }
 }
