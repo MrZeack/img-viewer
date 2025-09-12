@@ -150,12 +150,8 @@ pub fn get_image_files(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
         }
     }
     
-    // Sort by creation date (newest first)
-    files.sort_by(|a, b| {
-        let a_created = a.metadata().and_then(|m| m.created()).unwrap_or(std::time::UNIX_EPOCH);
-        let b_created = b.metadata().and_then(|m| m.created()).unwrap_or(std::time::UNIX_EPOCH);
-        b_created.cmp(&a_created) // reverse order for newest first
-    });
+    // Sort by modification date (oldest first)
+    files.sort_by_key(|a| a.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH));
     
     Ok(files)
 }

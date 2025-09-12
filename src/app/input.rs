@@ -160,14 +160,15 @@ impl ImageViewerApp {
             if moved_path.exists() {
                 if std::fs::rename(moved_path, original_path).is_ok() {
                     // Re-insert into file list at correct position
+                    let original_modified = original_path.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
                     let mut insert_pos = self.image_files.len();
                     for (i, file) in self.image_files.iter().enumerate() {
-                        if file.file_name() > original_path.file_name() {
+                        let file_modified = file.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                        if file_modified > original_modified {
                             insert_pos = i;
                             break;
                         }
                     }
-
                     self.image_files.insert(insert_pos, original_path.clone());
                     self.current_index = insert_pos;
                     self.last_moved = None;
