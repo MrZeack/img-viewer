@@ -14,11 +14,13 @@ NC='\033[0m' # No Color
 
 # Default values
 BUILD_TYPE="release"
-INSTALL=false
+INSTALL=true
 INSTALL_DIR="$HOME/.local/bin"
 SYSTEM_INSTALL=false
 TARGET=""
 VERBOSE=false
+NATIVE=true
+INSTALL_DEPS=false
 
 # Function to print colored output
 print_status() {
@@ -50,20 +52,22 @@ OPTIONS:
     -h, --help          Show this help message
     -d, --debug         Build in debug mode (faster compile, slower runtime)
     -r, --release       Build in release mode (default, optimized)
-    -i, --install       Install binary after building
+    --no-install        Don't install binary after building (default: install)
     -s, --system        Install to system directory (/usr/local/bin) [requires sudo]
     --install-dir DIR   Custom installation directory (default: ~/.local/bin)
     -t, --target TARGET Cross-compile for specific target
     -v, --verbose       Verbose output
-    --native            Optimize for current CPU (maximum performance)
+    --no-native         Don't optimize for current CPU (default: optimize)
+    --install-deps      Install system dependencies
     --clean             Clean build artifacts before building
 
 EXAMPLES:
-    $0                          # Build in release mode
-    $0 --debug                  # Build in debug mode  
-    $0 --install                # Build and install to ~/.local/bin
-    $0 --system --install       # Build and install system-wide
-    $0 --native                 # Build with CPU-specific optimizations
+    $0                          # Build, optimize, and install to ~/.local/bin
+    $0 --debug                  # Build in debug mode
+    $0 --no-install             # Build only, don't install
+    $0 --system                 # Build and install system-wide
+    $0 --no-native              # Build without CPU-specific optimizations
+    $0 --install-deps           # Build with system dependencies installation
     $0 --target x86_64-pc-windows-gnu  # Cross-compile for Windows
 
 TARGETS:
@@ -91,8 +95,8 @@ while [[ $# -gt 0 ]]; do
             BUILD_TYPE="release"
             shift
             ;;
-        -i|--install)
-            INSTALL=true
+        --no-install)
+            INSTALL=false
             shift
             ;;
         -s|--system)
@@ -112,9 +116,12 @@ while [[ $# -gt 0 ]]; do
             VERBOSE=true
             shift
             ;;
-        --native)
-            export RUSTFLAGS="-C target-cpu=native"
-            print_status "Building with native CPU optimizations"
+        --no-native)
+            NATIVE=false
+            shift
+            ;;
+        --install-deps)
+            INSTALL_DEPS=true
             shift
             ;;
         --clean)
@@ -131,6 +138,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 print_header
+
+# Set native optimizations by default
+if [[ "$NATIVE" == "true" ]]; then
+    export RUSTFLAGS="-C target-cpu=native"
+    print_status "Building with native CPU optimizations"
+fi
 
 # Check if Rust is installed
 if ! command -v cargo &> /dev/null; then
@@ -176,8 +189,8 @@ install_dependencies() {
     fi
 }
 
-# Install dependencies if not cross-compiling
-if [[ -z "$TARGET" ]]; then
+# Install dependencies only if requested and not cross-compiling
+if [[ "$INSTALL_DEPS" == "true" && -z "$TARGET" ]]; then
     install_dependencies
 fi
 
@@ -246,8 +259,18 @@ if [[ "$INSTALL" == "true" ]]; then
         mkdir -p "$INSTALL_DIR"
     fi
     
-    INSTALL_PATH="$INSTALL_DIR/img_viewer"
-    
+    INSTALL_PATH="$INSTALL_DIR/img"
+
+    # Remove existing binary if it exists
+    if [[ -f "$INSTALL_PATH" ]]; then
+        print_status "Removing existing binary at $INSTALL_PATH"
+        if [[ "$SYSTEM_INSTALL" == "true" ]]; then
+            sudo rm "$INSTALL_PATH"
+        else
+            rm "$INSTALL_PATH"
+        fi
+    fi
+
     # Copy binary
     if [[ "$SYSTEM_INSTALL" == "true" ]]; then
         sudo cp "$BINARY_PATH" "$INSTALL_PATH"
@@ -267,8 +290,8 @@ if [[ "$INSTALL" == "true" ]]; then
     fi
     
     # Test installation
-    if command -v img_viewer &> /dev/null; then
-        print_status "Installation successful! You can now run: img_viewer"
+    if command -v img &> /dev/null; then
+        print_status "Installation successful! You can now run: img"
     else
         print_warning "Binary installed but not found in PATH"
     fi
@@ -278,7 +301,11 @@ fi
 if [[ "$BUILD_TYPE" == "release" ]]; then
     echo
     print_status "Performance Tips:"
-    echo "  • For maximum performance, consider using --native flag"
+    if [[ "$NATIVE" == "true" ]]; then
+        echo "  • Native CPU optimizations enabled for maximum performance"
+    else
+        echo "  • For maximum performance, remove --no-native flag"
+    fi
     echo "  • Use 'cargo run --release' for direct execution"
     echo "  • Large images benefit from SSD storage"
     echo "  • Close other applications for best performance"

@@ -47,6 +47,8 @@ impl ImageViewerApp {
             status_message: None,
             bookmarks: std::collections::HashMap::new(),
             last_moved: None,
+            last_cache_cleanup: Instant::now(),
+            last_distant_cleanup: Instant::now(),
             event_receiver,
         };
         
@@ -70,7 +72,7 @@ impl ImageViewerApp {
         let path_str = current_path.to_string_lossy().to_string();
         
         // Check cache first
-        if let Some(cached_image_arc) = self.image_cache.lock().unwrap().get(&path_str) {
+        if let Some(cached_image_arc) = self.image_cache.get(&path_str) {
             self.current_image = Some(ctx.load_texture(
                 &path_str,
                 cached_image_arc.clone(),
@@ -101,7 +103,7 @@ impl ImageViewerApp {
             match event {
                 ViewerEvent::ImageLoaded(path, image_arc) => {
                     let path_str = path.to_string_lossy().to_string();
-                    self.image_cache.lock().unwrap().put(path_str.clone(), image_arc.clone());
+                    self.image_cache.put(path_str.clone(), image_arc.clone());
 
                     if path == self.image_files[self.current_index] {
                         self.current_image = Some(ctx.load_texture(
@@ -117,7 +119,7 @@ impl ImageViewerApp {
                         self.current_metadata = Some(metadata.clone());
                     }
                     let path_str = path.to_string_lossy().to_string();
-                    self.metadata_cache.lock().unwrap().put(path_str, metadata);
+                    self.metadata_cache.put(path_str, metadata);
                 }
             }
         }

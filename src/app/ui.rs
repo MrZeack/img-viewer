@@ -13,6 +13,20 @@ impl eframe::App for ImageViewerApp {
         // Process events
         self.process_events(ctx);
 
+        // Periodic cache cleanup (every 30 seconds)
+        let now = Instant::now();
+        if now.duration_since(self.last_cache_cleanup).as_secs() >= 30 {
+            self.cleanup_old_cache_entries();
+            self.cleanup_cache_by_usage();
+            self.last_cache_cleanup = now;
+        }
+
+        // Cleanup distant entries less frequently (every 2 minutes)
+        if now.duration_since(self.last_distant_cleanup).as_secs() >= 120 {
+            self.cleanup_distant_cache_entries();
+            self.last_distant_cleanup = now;
+        }
+
         // Update status message timeout
         if let Some((_, expiry)) = &self.status_message {
             if Instant::now() > *expiry {

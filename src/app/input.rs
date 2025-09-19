@@ -70,6 +70,9 @@ impl ImageViewerApp {
             let dest_path = dest_dir.join(file_name);
 
             if std::fs::rename(&current_path, &dest_path).is_ok() {
+                // Clean cache for moved image
+                self.clean_cache_for_moved_image(&current_path);
+
                 self.last_moved = Some((current_path, dest_path, "best".to_string()));
                 self.image_files.remove(self.current_index);
 
@@ -102,6 +105,9 @@ impl ImageViewerApp {
             let dest_path = dest_dir.join(file_name);
 
             if std::fs::rename(&current_path, &dest_path).is_ok() {
+                // Clean cache for moved image
+                self.clean_cache_for_moved_image(&current_path);
+
                 self.last_moved = Some((current_path, dest_path, "worse".to_string()));
                 self.image_files.remove(self.current_index);
 
@@ -134,6 +140,9 @@ impl ImageViewerApp {
             let dest_path = dest_dir.join(file_name);
 
             if std::fs::rename(&current_path, &dest_path).is_ok() {
+                // Clean cache for moved image
+                self.clean_cache_for_moved_image(&current_path);
+
                 self.last_moved = Some((current_path, dest_path, "deleted".to_string()));
                 self.image_files.remove(self.current_index);
 

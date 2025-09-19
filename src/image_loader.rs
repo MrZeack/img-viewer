@@ -200,6 +200,6 @@ impl ImagePreloader {
     
     fn is_cached(&self, path: &Path) -> bool {
         let key = path.to_string_lossy().to_string();
-        self.cache.lock().unwrap().contains(&key)
+        self.cache.contains(&key)
     }
 }

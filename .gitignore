@@ -1,0 +1,7 @@
+example/
+*.code-workspace
+.vscode/
+.DS_Store
+CLAUDE.md
+target/
+delete_safe/
