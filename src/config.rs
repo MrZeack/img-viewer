@@ -5,6 +5,7 @@ use std::fs;
 pub struct Config {
     pub cache: CacheConfig,
     pub performance: PerformanceConfig,
+    pub browsing: BrowsingConfig,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -17,18 +18,28 @@ pub struct CacheConfig {
 pub struct PerformanceConfig {
     pub loader_threads: usize,
     pub preload_distance: usize,
+    pub max_cached_dimension: u32,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub struct BrowsingConfig {
+    pub sort_newest_first: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             cache: CacheConfig {
-                image_capacity: 100,
+                image_capacity: 50,
                 metadata_capacity: 50,
             },
             performance: PerformanceConfig {
                 loader_threads: 4,
                 preload_distance: 2,
+                max_cached_dimension: 2048,
+            },
+            browsing: BrowsingConfig {
+                sort_newest_first: true,
             },
         }
     }

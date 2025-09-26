@@ -1,5 +1,6 @@
 use super::state::ImageViewerApp;
 use eframe::egui::{self, CentralPanel, Context, SidePanel, TopBottomPanel};
+use std::time::Duration;
 use crate::image_loader::get_image_files;
 use crate::metadata_simple::format_file_size;
 use crate::composition::generate_composition_lines;
@@ -7,6 +8,11 @@ use std::time::Instant;
 
 impl eframe::App for ImageViewerApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        if self.should_close {
+            // eframe 0.28: close via viewport command
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
         // Handle keyboard input
         self.handle_keyboard_input(ctx);
 
@@ -40,7 +46,7 @@ impl eframe::App for ImageViewerApp {
                     if ui.button("Open Folder...").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_folder() {
                             self.current_dir = path;
-                            self.image_files = get_image_files(&self.current_dir).unwrap_or_default();
+                            self.image_files = get_image_files(&self.current_dir, self.sort_newest_first).unwrap_or_default();
                             self.current_index = 0;
                             self.current_image = None;
                             self.current_metadata = None;
@@ -51,7 +57,7 @@ impl eframe::App for ImageViewerApp {
                         ui.close_menu();
                     }
                     if ui.button("Exit").clicked() {
-                        std::process::exit(0);
+                        self.should_close = true;
                     }
                 });
             });
@@ -309,33 +315,47 @@ impl eframe::App for ImageViewerApp {
 
                 // Draw composition lines
                 if self.show_composition {
+                    // Cache by type + size only; lines are generated in local space (0,0..display_size)
                     let cache_key = format!(
-                        "{:?}_{:.0}x{:.0}_{:.0},{:.0}",
+                        "{:?}_{:.0}x{:.0}",
                         self.composition_type,
                         display_size.x,
-                        display_size.y,
-                        image_pos.x,
-                        image_pos.y
+                        display_size.y
                     );
 
+                    let local_rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), display_size);
                     let lines = if let Some(cached_lines) = self.composition_cache.get(&cache_key) {
                         cached_lines
                     } else {
-                        let lines = generate_composition_lines(self.composition_type, image_rect);
+                        let lines = generate_composition_lines(self.composition_type, local_rect);
                         self.composition_cache.put(cache_key, lines.clone());
                         lines
                     };
 
-                    for line in lines {
-                        ui.painter().line_segment([line.start, line.end], line.stroke);
+                    // Shift cached local lines to current image position
+                    let offset = image_rect.min.to_vec2();
+                    for mut line in lines {
+                        let start = line.start + offset;
+                        let end = line.end + offset;
+                        ui.painter().line_segment([start, end], line.stroke);
                     }
                 }
 
                 // Handle mouse input for zoom and pan
                 if response.hovered() {
+                    // Mouse wheel zoom
                     let scroll_delta = ctx.input(|i| i.raw_scroll_delta.y);
+                    // Trackpad pinch zoom
+                    let pinch_zoom = ctx.input(|i| i.zoom_delta());
+
+                    let mut zoom_change: Option<f32> = None;
                     if scroll_delta != 0.0 {
-                        let zoom_factor = if scroll_delta > 0.0 { 1.1 } else { 0.9 };
+                        zoom_change = Some(if scroll_delta > 0.0 { 1.1 } else { 0.9 });
+                    } else if (pinch_zoom - 1.0).abs() > f32::EPSILON {
+                        zoom_change = Some(pinch_zoom);
+                    }
+
+                    if let Some(zoom_factor) = zoom_change {
                         let old_zoom = self.zoom_factor;
                         self.zoom_factor = (self.zoom_factor * zoom_factor).clamp(0.1, 10.0);
 
@@ -363,7 +383,20 @@ impl eframe::App for ImageViewerApp {
             }
         });
 
-        // Request repaint for smooth animations
-        ctx.request_repaint();
+        // Repaint throttle: only when needed
+        let mut needs_repaint = false;
+        if let Some((_, expiry)) = &self.status_message {
+            if Instant::now() <= *expiry {
+                needs_repaint = true;
+            }
+        }
+        if !self.loading_requests.is_empty() {
+            needs_repaint = true;
+        }
+        if needs_repaint {
+            // Aim ~60 FPS while active, or slower for status-only updates
+            let interval = if !self.loading_requests.is_empty() { 16 } else { 100 };
+            ctx.request_repaint_after(Duration::from_millis(interval));
+        }
     }
 }

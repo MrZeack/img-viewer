@@ -1,5 +1,8 @@
 use super::state::ImageViewerApp;
 use eframe::egui::{Context, Key};
+use std::fs;
+use std::io;
+use std::path::Path;
 
 impl ImageViewerApp {
     pub(crate) fn handle_keyboard_input(&mut self, ctx: &Context) {
@@ -28,7 +31,7 @@ impl ImageViewerApp {
                 self.composition_cache.clear();
             }
         } else if ctx.input(|i| i.key_pressed(Key::Escape)) {
-            std::process::exit(0);
+            self.should_close = true;
         }
 
         // Handle number keys for bookmarks
@@ -69,11 +72,12 @@ impl ImageViewerApp {
             let dest_dir = self.current_dir.join("best");
             let dest_path = dest_dir.join(file_name);
 
-            if std::fs::rename(&current_path, &dest_path).is_ok() {
+            if move_with_fallback(&current_path, &dest_path).is_ok() {
                 // Clean cache for moved image
                 self.clean_cache_for_moved_image(&current_path);
 
-                self.last_moved = Some((current_path, dest_path, "best".to_string()));
+                let prev_index = self.current_index;
+                self.last_moved = Some((current_path, dest_path, "best".to_string(), prev_index));
                 self.image_files.remove(self.current_index);
 
                 if self.current_index >= self.image_files.len() && !self.image_files.is_empty() {
@@ -104,11 +108,12 @@ impl ImageViewerApp {
             let dest_dir = self.current_dir.join("worse");
             let dest_path = dest_dir.join(file_name);
 
-            if std::fs::rename(&current_path, &dest_path).is_ok() {
+            if move_with_fallback(&current_path, &dest_path).is_ok() {
                 // Clean cache for moved image
                 self.clean_cache_for_moved_image(&current_path);
 
-                self.last_moved = Some((current_path, dest_path, "worse".to_string()));
+                let prev_index = self.current_index;
+                self.last_moved = Some((current_path, dest_path, "worse".to_string(), prev_index));
                 self.image_files.remove(self.current_index);
 
                 if self.current_index >= self.image_files.len() && !self.image_files.is_empty() {
@@ -139,11 +144,12 @@ impl ImageViewerApp {
             let dest_dir = self.current_dir.join("deleted");
             let dest_path = dest_dir.join(file_name);
 
-            if std::fs::rename(&current_path, &dest_path).is_ok() {
+            if move_with_fallback(&current_path, &dest_path).is_ok() {
                 // Clean cache for moved image
                 self.clean_cache_for_moved_image(&current_path);
 
-                self.last_moved = Some((current_path, dest_path, "deleted".to_string()));
+                let prev_index = self.current_index;
+                self.last_moved = Some((current_path, dest_path, "deleted".to_string(), prev_index));
                 self.image_files.remove(self.current_index);
 
                 if self.current_index >= self.image_files.len() && !self.image_files.is_empty() {
@@ -165,19 +171,11 @@ impl ImageViewerApp {
     }
 
     fn undo_last_move(&mut self) {
-        if let Some((original_path, moved_path, dir_type)) = &self.last_moved.clone() {
+        if let Some((original_path, moved_path, dir_type, prev_index)) = &self.last_moved.clone() {
             if moved_path.exists() {
-                if std::fs::rename(moved_path, original_path).is_ok() {
-                    // Re-insert into file list at correct position
-                    let original_modified = original_path.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                    let mut insert_pos = self.image_files.len();
-                    for (i, file) in self.image_files.iter().enumerate() {
-                        let file_modified = file.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                        if file_modified > original_modified {
-                            insert_pos = i;
-                            break;
-                        }
-                    }
+                if move_with_fallback(moved_path, original_path).is_ok() {
+                    // Re-insert at previous index
+                    let insert_pos = (*prev_index).min(self.image_files.len());
                     self.image_files.insert(insert_pos, original_path.clone());
                     self.current_index = insert_pos;
                     self.last_moved = None;
@@ -248,6 +246,17 @@ impl ImageViewerApp {
             self.set_status_message(&format!("Cleared {} bookmark(s)", count), 3.0);
         } else {
             self.set_status_message("No bookmarks to clear", 3.0);
+        }
+    }
+}
+
+fn move_with_fallback(src: &Path, dest: &Path) -> Result<(), io::Error> {
+    if let Some(parent) = dest.parent() { let _ = fs::create_dir_all(parent); }
+    match fs::rename(src, dest) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Cross-device or permission issues: try copy + remove
+            fs::copy(src, dest).and_then(|_| fs::remove_file(src)).map(|_| ()).or(Err(e))
         }
     }
 }

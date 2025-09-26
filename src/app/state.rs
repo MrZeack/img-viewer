@@ -49,7 +49,7 @@ pub struct ImageViewerApp {
     pub(crate) bookmarks: HashMap<usize, BookmarkState>,
     
     // Image management
-    pub(crate) last_moved: Option<(PathBuf, PathBuf, String)>, // source, dest, type
+    pub(crate) last_moved: Option<(PathBuf, PathBuf, String, usize)>, // source, dest, type, previous index
 
     // Cache management
     pub(crate) last_cache_cleanup: Instant,
@@ -57,6 +57,15 @@ pub struct ImageViewerApp {
 
     // Event bus
     pub(crate) event_receiver: mpsc::Receiver<ViewerEvent>,
+
+    // Lifecycle
+    pub(crate) should_close: bool,
+
+    // Preferences
+    pub(crate) sort_newest_first: bool,
+
+    // Performance tuning
+    pub(crate) max_cached_dimension: u32,
 }
 
 #[derive(Clone, Debug)]

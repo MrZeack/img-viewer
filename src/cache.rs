@@ -31,12 +31,24 @@ impl TimestampedImageCache {
     }
 
     pub fn get(&self, key: &str) -> Option<Arc<ColorImage>> {
-        self.cache.lock().unwrap().get(key).cloned()
+        let value = self.cache.lock().unwrap().get(key).cloned();
+        if value.is_some() {
+            // refresh last-access timestamp on successful hit
+            self.timestamps.lock().unwrap().insert(key.to_string(), Instant::now());
+        }
+        value
     }
 
     pub fn put(&self, key: String, value: Arc<ColorImage>) {
-        self.cache.lock().unwrap().put(key.clone(), value);
-        self.timestamps.lock().unwrap().insert(key, Instant::now());
+        {
+            let mut cache = self.cache.lock().unwrap();
+            cache.put(key.clone(), value);
+        }
+        {
+            let mut ts = self.timestamps.lock().unwrap();
+            ts.insert(key, Instant::now());
+        }
+        self.reconcile_timestamps_with_cache();
     }
 
     pub fn remove(&self, key: &str) {
@@ -76,6 +88,19 @@ impl TimestampedImageCache {
     }
 }
 
+impl TimestampedImageCache {
+    fn reconcile_timestamps_with_cache(&self) {
+        let keys: Vec<String> = {
+            let cache = self.cache.lock().unwrap();
+            cache.iter().map(|(k, _)| k.clone()).collect()
+        };
+        let mut ts = self.timestamps.lock().unwrap();
+        if ts.len() > keys.len() {
+            ts.retain(|k, _| keys.contains(k));
+        }
+    }
+}
+
 impl TimestampedMetadataCache {
     pub fn new(capacity: usize) -> Self {
         Self {
@@ -87,12 +112,23 @@ impl TimestampedMetadataCache {
     }
 
     pub fn get(&self, key: &str) -> Option<crate::metadata_simple::ImageMetadata> {
-        self.cache.lock().unwrap().get(key).cloned()
+        let value = self.cache.lock().unwrap().get(key).cloned();
+        if value.is_some() {
+            self.timestamps.lock().unwrap().insert(key.to_string(), Instant::now());
+        }
+        value
     }
 
     pub fn put(&self, key: String, value: crate::metadata_simple::ImageMetadata) {
-        self.cache.lock().unwrap().put(key.clone(), value);
-        self.timestamps.lock().unwrap().insert(key, Instant::now());
+        {
+            let mut cache = self.cache.lock().unwrap();
+            cache.put(key.clone(), value);
+        }
+        {
+            let mut ts = self.timestamps.lock().unwrap();
+            ts.insert(key, Instant::now());
+        }
+        self.reconcile_timestamps_with_cache();
     }
 
     pub fn remove(&self, key: &str) {
@@ -125,6 +161,19 @@ impl TimestampedMetadataCache {
 
     pub fn len(&self) -> usize {
         self.cache.lock().unwrap().len()
+    }
+}
+
+impl TimestampedMetadataCache {
+    fn reconcile_timestamps_with_cache(&self) {
+        let keys: Vec<String> = {
+            let cache = self.cache.lock().unwrap();
+            cache.iter().map(|(k, _)| k.clone()).collect()
+        };
+        let mut ts = self.timestamps.lock().unwrap();
+        if ts.len() > keys.len() {
+            ts.retain(|k, _| keys.contains(k));
+        }
     }
 }
 
@@ -164,8 +213,15 @@ impl CompositionCache {
     }
 
     pub fn put(&self, key: String, lines: Vec<CompositionLine>) {
-        self.cache.lock().unwrap().put(key.clone(), lines);
-        self.timestamps.lock().unwrap().insert(key, Instant::now());
+        {
+            let mut cache = self.cache.lock().unwrap();
+            cache.put(key.clone(), lines);
+        }
+        {
+            let mut ts = self.timestamps.lock().unwrap();
+            ts.insert(key, Instant::now());
+        }
+        self.reconcile_timestamps_with_cache();
     }
 
     pub fn remove(&self, key: &str) {
@@ -198,5 +254,18 @@ impl CompositionCache {
 
     pub fn len(&self) -> usize {
         self.cache.lock().unwrap().len()
+    }
+}
+
+impl CompositionCache {
+    fn reconcile_timestamps_with_cache(&self) {
+        let keys: Vec<String> = {
+            let cache = self.cache.lock().unwrap();
+            cache.iter().map(|(k, _)| k.clone()).collect()
+        };
+        let mut ts = self.timestamps.lock().unwrap();
+        if ts.len() > keys.len() {
+            ts.retain(|k, _| keys.contains(k));
+        }
     }
 }

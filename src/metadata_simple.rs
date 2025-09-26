@@ -3,6 +3,7 @@ use chrono::{DateTime, Local};
 use std::path::Path;
 use serde::{Deserialize, Serialize};
 use exif::Value;
+use std::io::BufReader;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageMetadata {
@@ -77,11 +78,9 @@ pub fn extract_metadata(path: &Path) -> Result<ImageMetadata> {
             .to_string(),
     };
     
-    // Load image for basic info
-    let img_data = std::fs::read(path)?;
-    let img = image::load_from_memory(&img_data)?;
-    
-    let dimensions = (img.width(), img.height());
+    // Image basic info without full decode
+    let (w, h) = image::image_dimensions(path)?;
+    let dimensions = (w, h);
     let megapixels = (dimensions.0 as f64 * dimensions.1 as f64) / 1_000_000.0;
     
     // Calculate aspect ratio
@@ -97,8 +96,8 @@ pub fn extract_metadata(path: &Path) -> Result<ImageMetadata> {
         format: guess_format_from_path(path),
     };
     
-    // Extract EXIF data using nom-exif
-    let exif_info = extract_exif_data(&img_data);
+    // Extract EXIF data directly from file
+    let exif_info = extract_exif_data_from_file(path);
     
     Ok(ImageMetadata {
         file_info,
@@ -135,13 +134,13 @@ pub fn format_file_size(size: u64) -> String {
     }
 }
 
-fn extract_exif_data(data: &[u8]) -> Option<ExifInfo> {
-    use std::io::Cursor;
+fn extract_exif_data_from_file(path: &Path) -> Option<ExifInfo> {
     use exif::{Reader, Tag, In, Value};
-    
-    let mut buf_reader = Cursor::new(data);
+
+    let file = std::fs::File::open(path).ok()?;
+    let mut buf_reader = BufReader::new(file);
     let exif_reader = Reader::new();
-    
+
     match exif_reader.read_from_container(&mut buf_reader) {
         Ok(exif) => {
             let mut exif_info = ExifInfo {
@@ -177,10 +176,7 @@ fn extract_exif_data(data: &[u8]) -> Option<ExifInfo> {
             // Extract date taken (DateTime Original)
             if let Some(field) = exif.get_field(Tag::DateTimeOriginal, In::PRIMARY) {
                 let datetime_str = field.display_value().with_unit(&exif).to_string();
-                // Parse EXIF datetime format: "YYYY-MM-DD HH:MM:SS"
-                if let Ok(naive_dt) = chrono::NaiveDateTime::parse_from_str(&datetime_str, "%Y-%m-%d %H:%M:%S") {
-                    exif_info.date_taken = Some(DateTime::from_naive_utc_and_offset(naive_dt, Local::now().offset().clone()));
-                }
+                exif_info.date_taken = parse_exif_datetime(&datetime_str);
             }
 
             // Extract ISO (PhotographicSensitivity)
@@ -268,6 +264,17 @@ fn extract_exif_data(data: &[u8]) -> Option<ExifInfo> {
             None
         }
     }
+}
+
+fn parse_exif_datetime(s: &str) -> Option<DateTime<Local>> {
+    // Common EXIF patterns: "YYYY:MM:DD HH:MM:SS" and "YYYY-MM-DD HH:MM:SS"
+    let candidates = ["%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"];
+    for fmt in candidates.iter() {
+        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
+            return Some(DateTime::from_naive_utc_and_offset(naive, Local::now().offset().clone()));
+        }
+    }
+    None
 }
 
 fn format_flash_value(value: &Value) -> String {

@@ -15,10 +15,16 @@ impl ImageViewerApp {
         let event_bus = EventBus::new(event_sender);
 
         let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let image_files = get_image_files(&current_dir).unwrap_or_default();
+        let image_files = get_image_files(&current_dir, config.browsing.sort_newest_first).unwrap_or_default();
         
         let image_cache = create_image_cache(config.cache.image_capacity);
-        let preloader = ImagePreloader::new(image_cache.clone(), config.performance.preload_distance, event_bus.clone());
+        let preview_dim = config.performance.max_cached_dimension.min(1024);
+        let preloader = ImagePreloader::new(
+            image_cache.clone(),
+            config.performance.preload_distance,
+            event_bus.clone(),
+            preview_dim,
+        );
         
         // Create directories for image management
         std::fs::create_dir_all(current_dir.join("best")).ok();
@@ -50,6 +56,9 @@ impl ImageViewerApp {
             last_cache_cleanup: Instant::now(),
             last_distant_cleanup: Instant::now(),
             event_receiver,
+            should_close: false,
+            sort_newest_first: config.browsing.sort_newest_first,
+            max_cached_dimension: config.performance.max_cached_dimension,
         };
         
         if !app.image_files.is_empty() {
@@ -80,7 +89,8 @@ impl ImageViewerApp {
             ));
         } else {
             // Request image load
-            self.image_loader.load_image(current_path, None, true);
+            let d = self.max_cached_dimension;
+            self.image_loader.load_image(current_path, Some((d, d)), true);
             self.loading_requests.insert(current_path.clone(), Instant::now());
         }
         
@@ -96,6 +106,9 @@ impl ImageViewerApp {
         // Request metadata extraction
         let path = current_path.clone();
         self.metadata_loader.load_metadata(&path);
+
+        // Aggressive cleanup of distant entries on navigation
+        self.cleanup_distant_cache_entries();
     }
     
     pub(crate) fn process_events(&mut self, ctx: &Context) {

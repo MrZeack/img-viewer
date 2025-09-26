@@ -24,7 +24,7 @@ fn main() -> Result<(), eframe::Error> {
     };
 
     eframe::run_native(
-        "Image Viewer",
+        &format!("Image Viewer v{}", version),
         options,
         Box::new(move |cc| {
             // Configure UI style for dark theme

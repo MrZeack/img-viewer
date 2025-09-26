@@ -2,11 +2,13 @@ use rayon::prelude::*;
 use anyhow::Result;
 use egui::ColorImage;
 use image::{DynamicImage, ImageFormat};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use crate::event::{EventBus, ViewerEvent};
 use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::Mutex;
 
 #[derive(Debug, Clone)]
 pub struct LoadedImage {
@@ -15,6 +17,7 @@ pub struct LoadedImage {
 
 pub struct ImageLoader {
     sender: mpsc::Sender<LoadRequest>,
+    pending: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
 #[derive(Debug)]
@@ -27,6 +30,8 @@ struct LoadRequest {
 impl ImageLoader {
     pub fn new(num_threads: usize, event_bus: EventBus) -> Self {
         let (tx, rx) = mpsc::channel::<LoadRequest>();
+        let pending: Arc<Mutex<HashSet<PathBuf>>> = Arc::new(Mutex::new(HashSet::new()));
+        let pending_worker = pending.clone();
         
         thread::spawn(move || {
             let pool = rayon::ThreadPoolBuilder::new()
@@ -37,25 +42,32 @@ impl ImageLoader {
             pool.install(|| {
                 rx.into_iter().par_bridge().for_each(|request| {
                     let path = request.path.clone();
-                    if let Ok(loaded_image) = load_image_sync(request) {
-                        let image_arc = Arc::new(loaded_image.image);
-                        event_bus.publish(ViewerEvent::ImageLoaded(path, image_arc));
+                    let result = load_image_sync(request)
+                        .map(|loaded_image| Arc::new(loaded_image.image));
+                    if let Ok(image_arc) = result {
+                        event_bus.publish(ViewerEvent::ImageLoaded(path.clone(), image_arc));
+                    }
+                    // mark request as completed (success or error)
+                    if let Ok(mut set) = pending_worker.lock() {
+                        set.remove(&path);
                     }
                 });
             });
         });
         
-        Self {
-            sender: tx,
-        }
+        Self { sender: tx, pending }
     }
 
     pub fn load_image(&self, path: &Path, target_size: Option<(u32, u32)>, high_quality: bool) {
-        let request = LoadRequest {
-            path: path.to_path_buf(),
-            target_size,
-            high_quality,
-        };
+        let p = path.to_path_buf();
+        if let Ok(mut set) = self.pending.lock() {
+            if set.contains(&p) {
+                return;
+            }
+            set.insert(p.clone());
+        }
+
+        let request = LoadRequest { path: p, target_size, high_quality };
         let _ = self.sender.send(request);
     }
 }
@@ -133,7 +145,7 @@ fn dynamic_image_to_color_image(img: &DynamicImage) -> ColorImage {
     }
 }
 
-pub fn get_image_files(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+pub fn get_image_files(dir: &Path, newest_first: bool) -> Result<Vec<std::path::PathBuf>> {
     let mut files = Vec::new();
     
     if dir.is_dir() {
@@ -150,8 +162,11 @@ pub fn get_image_files(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
         }
     }
     
-    // Sort by modification date (oldest first)
+    // Sort by modification date
     files.sort_by_key(|a| a.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH));
+    if newest_first {
+        files.reverse();
+    }
     
     Ok(files)
 }
@@ -161,14 +176,16 @@ pub struct ImagePreloader {
     loader: ImageLoader,
     cache: crate::cache::ImageCache,
     preload_distance: usize,
+    preview_size: u32,
 }
 
 impl ImagePreloader {
-    pub fn new(cache: crate::cache::ImageCache, preload_distance: usize, event_bus: EventBus) -> Self {
+    pub fn new(cache: crate::cache::ImageCache, preload_distance: usize, event_bus: EventBus, preview_size: u32) -> Self {
         Self {
             loader: ImageLoader::new(2, event_bus), // Preloader uses a small number of threads
             cache,
             preload_distance,
+            preview_size,
         }
     }
     
@@ -181,7 +198,7 @@ impl ImagePreloader {
                 if idx + i < all_files.len() {
                     let next_path = &all_files[idx + i];
                     if !self.is_cached(next_path) {
-                        self.loader.load_image(next_path, Some((1024, 1024)), false);
+                        self.loader.load_image(next_path, Some((self.preview_size, self.preview_size)), false);
                     }
                 }
             }
@@ -191,7 +208,7 @@ impl ImagePreloader {
                 if idx >= i {
                     let prev_path = &all_files[idx - i];
                     if !self.is_cached(prev_path) {
-                        self.loader.load_image(prev_path, Some((1024, 1024)), false);
+                        self.loader.load_image(prev_path, Some((self.preview_size, self.preview_size)), false);
                     }
                 }
             }
