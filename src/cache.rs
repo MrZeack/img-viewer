@@ -1,3 +1,4 @@
+//! Caching implementation for images, metadata, and composition lines
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -5,19 +6,27 @@ use std::time::{Duration, Instant};
 use std::collections::HashMap;
 use egui::ColorImage;
 
+/// Cache for image data with timestamp tracking for cleanup
 #[derive(Clone)]
 pub struct TimestampedImageCache {
+    /// The main LRU cache holding image data
     pub cache: Arc<Mutex<LruCache<String, Arc<ColorImage>>>>,
+    /// Map of keys to timestamps for cleanup operations
     timestamps: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
+/// Cache for image metadata with timestamp tracking for cleanup
 #[derive(Clone)]
 pub struct TimestampedMetadataCache {
+    /// The main LRU cache holding metadata
     pub cache: Arc<Mutex<LruCache<String, crate::metadata_simple::ImageMetadata>>>,
+    /// Map of keys to timestamps for cleanup operations
     timestamps: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
+/// Type alias for the image cache
 pub type ImageCache = TimestampedImageCache;
+/// Type alias for the metadata cache
 pub type MetadataCache = TimestampedMetadataCache;
 
 impl TimestampedImageCache {
@@ -191,10 +200,14 @@ pub struct CompositionCache {
     timestamps: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
+/// Represents a single line in a composition guide
 #[derive(Debug, Clone)]
 pub struct CompositionLine {
+    /// Starting position of the line
     pub start: egui::Pos2,
+    /// Ending position of the line
     pub end: egui::Pos2,
+    /// Stroke style for rendering the line
     pub stroke: egui::Stroke,
 }
 

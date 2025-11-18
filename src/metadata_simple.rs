@@ -1,9 +1,9 @@
-use anyhow::Result;
 use chrono::{DateTime, Local};
 use std::path::Path;
 use serde::{Deserialize, Serialize};
 use exif::Value;
 use std::io::BufReader;
+use crate::errors::AppError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageMetadata {
@@ -50,8 +50,9 @@ pub struct ExifInfo {
     pub orientation: Option<String>,
 }
 
-pub fn extract_metadata(path: &Path) -> Result<ImageMetadata> {
-    let metadata = std::fs::metadata(path)?;
+pub fn extract_metadata(path: &Path) -> Result<ImageMetadata, AppError> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|e| AppError::MetadataError(format!("Failed to get file metadata for {}: {}", path.display(), e)))?;
     
     // File info
     let file_info = FileInfo {
@@ -79,7 +80,8 @@ pub fn extract_metadata(path: &Path) -> Result<ImageMetadata> {
     };
     
     // Image basic info without full decode
-    let (w, h) = image::image_dimensions(path)?;
+    let (w, h) = image::image_dimensions(path)
+        .map_err(|e| AppError::MetadataError(format!("Failed to get image dimensions for {}: {}", path.display(), e)))?;
     let dimensions = (w, h);
     let megapixels = (dimensions.0 as f64 * dimensions.1 as f64) / 1_000_000.0;
     
@@ -137,7 +139,10 @@ pub fn format_file_size(size: u64) -> String {
 fn extract_exif_data_from_file(path: &Path) -> Option<ExifInfo> {
     use exif::{Reader, Tag, In, Value};
 
-    let file = std::fs::File::open(path).ok()?;
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return None, // Return None if file can't be opened
+    };
     let mut buf_reader = BufReader::new(file);
     let exif_reader = Reader::new();
 

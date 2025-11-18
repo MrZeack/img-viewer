@@ -1,24 +1,40 @@
+//! Composition guides for photography and visual arts
 use egui::{Pos2, Stroke, Color32, Rect};
 use crate::cache::CompositionLine;
 
+/// Different types of composition guides available in the viewer
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CompositionType {
+    /// Classic rule of thirds grid
     RuleOfThirds,
+    /// Golden ratio based composition
     GoldenRatio,
+    /// Diagonal composition lines
     Diagonal,
+    /// Triangular composition guides
     Triangle,
+    /// Golden spiral composition guide
     GoldenSpiral,
+    /// Center horizontal and vertical lines
     CenterLines,
+    /// Phi-based grid system
     PhiGrid,
+    /// Classical art composition system
     DynamicSymmetry,
+    /// Geometric composition base
     ArmatureOfRectangle,
+    /// Square-within-rectangle guides
     Rabatment,
+    /// Balanced triangular guides
     HarmoniousTriangles,
+    /// Reverse diagonal with reciprocals
     SinisterDiagonal,
+    /// Format-specific aspect ratio guides
     AspectRatioGuides,
 }
 
 impl CompositionType {
+    /// Returns all available composition types
     pub fn all() -> &'static [CompositionType] {
         &[
             CompositionType::RuleOfThirds,
@@ -37,6 +53,7 @@ impl CompositionType {
         ]
     }
     
+    /// Returns the display name for the composition type
     pub fn name(&self) -> &'static str {
         match self {
             CompositionType::RuleOfThirds => "Rule Of Thirds",
@@ -55,12 +72,14 @@ impl CompositionType {
         }
     }
     
+    /// Returns the next composition type in the sequence
     pub fn next(&self) -> CompositionType {
         let all = Self::all();
         let current_index = all.iter().position(|&t| t == *self).unwrap_or(0);
         all[(current_index + 1) % all.len()]
     }
     
+    /// Returns the previous composition type in the sequence
     pub fn prev(&self) -> CompositionType {
         let all = Self::all();
         let current_index = all.iter().position(|&t| t == *self).unwrap_or(0);
@@ -70,6 +89,7 @@ impl CompositionType {
 
 const PHI_INV: f32 = 0.618;
 
+/// Generates composition lines for a given composition type and image rectangle
 pub fn generate_composition_lines(
     composition_type: CompositionType,
     image_rect: Rect,

@@ -1,5 +1,5 @@
+//! Asynchronous image loading with multi-threading and caching
 use rayon::prelude::*;
-use anyhow::Result;
 use egui::ColorImage;
 use image::{DynamicImage, ImageFormat};
 use std::path::{Path, PathBuf};
@@ -9,9 +9,12 @@ use crate::event::{EventBus, ViewerEvent};
 use std::sync::Arc;
 use std::collections::HashSet;
 use std::sync::Mutex;
+use crate::errors::AppError;
 
+/// Represents a successfully loaded image
 #[derive(Debug, Clone)]
 pub struct LoadedImage {
+    /// The loaded image as an egui ColorImage
     pub image: ColorImage,
 }
 
@@ -72,17 +75,21 @@ impl ImageLoader {
     }
 }
 
-fn load_image_sync(request: LoadRequest) -> Result<LoadedImage> {
-    let data = std::fs::read(&request.path)?;
+fn load_image_sync(request: LoadRequest) -> Result<LoadedImage, AppError> {
+    let data = std::fs::read(&request.path)
+        .map_err(|e| AppError::FileSystemError(format!("Failed to read image file {}: {}", request.path.display(), e)))?;
     
     // Determine image format
-    let format = image::guess_format(&data)?;
+    let format = image::guess_format(&data)
+        .map_err(|e| AppError::ImageLoadError(format!("Failed to guess image format for {}: {}", request.path.display(), e)))?;
     
     // For JPEG images, use optimized loading
     let img = if format == ImageFormat::Jpeg {
-        load_jpeg_optimized(&data, request.target_size)?
+        load_jpeg_optimized(&data, request.target_size)
+            .map_err(|e| AppError::ImageLoadError(format!("Failed to load JPEG {}: {}", request.path.display(), e)))?
     } else {
-        let mut img = image::load_from_memory_with_format(&data, format)?;
+        let mut img = image::load_from_memory_with_format(&data, format)
+            .map_err(|e| AppError::ImageLoadError(format!("Failed to load image {}: {}", request.path.display(), e)))?;
         
         // Resize if needed
         if let Some((width, height)) = request.target_size {
@@ -106,11 +113,12 @@ fn load_image_sync(request: LoadRequest) -> Result<LoadedImage> {
     })
 }
 
-fn load_jpeg_optimized(data: &[u8], target_size: Option<(u32, u32)>) -> Result<DynamicImage> {
+fn load_jpeg_optimized(data: &[u8], target_size: Option<(u32, u32)>) -> Result<DynamicImage, AppError> {
     use image::codecs::jpeg::JpegDecoder;
     use image::ImageDecoder;
     
-    let decoder = JpegDecoder::new(std::io::Cursor::new(data))?;
+    let decoder = JpegDecoder::new(std::io::Cursor::new(data))
+        .map_err(|e| AppError::ImageLoadError(format!("Failed to create JPEG decoder: {}", e)))?;
     
     // Use JPEG's built-in downsampling for better performance
     let img = if let Some((target_width, target_height)) = target_size {
@@ -119,14 +127,18 @@ fn load_jpeg_optimized(data: &[u8], target_size: Option<(u32, u32)>) -> Result<D
         
         if scale > 1 {
             // Use JPEG's efficient downsampling
-            let decoder = JpegDecoder::new(std::io::Cursor::new(data))?;
+            let decoder = JpegDecoder::new(std::io::Cursor::new(data))
+                .map_err(|e| AppError::ImageLoadError(format!("Failed to create JPEG decoder for downsampling: {}", e)))?;
             // Note: set_max_decoding_pixels not available in this version
-            DynamicImage::from_decoder(decoder)?
+            DynamicImage::from_decoder(decoder)
+                .map_err(|e| AppError::ImageLoadError(format!("Failed to decode JPEG: {}", e)))?
         } else {
-            image::load_from_memory_with_format(data, image::ImageFormat::Jpeg)?
+            image::load_from_memory_with_format(data, image::ImageFormat::Jpeg)
+                .map_err(|e| AppError::ImageLoadError(format!("Failed to load JPEG: {}", e)))?
         }
     } else {
-        image::load_from_memory_with_format(data, image::ImageFormat::Jpeg)?
+        image::load_from_memory_with_format(data, image::ImageFormat::Jpeg)
+            .map_err(|e| AppError::ImageLoadError(format!("Failed to load JPEG: {}", e)))?
     };
     
     Ok(img)
@@ -145,12 +157,16 @@ fn dynamic_image_to_color_image(img: &DynamicImage) -> ColorImage {
     }
 }
 
-pub fn get_image_files(dir: &Path, newest_first: bool) -> Result<Vec<std::path::PathBuf>> {
+pub fn get_image_files(dir: &Path, newest_first: bool) -> Result<Vec<std::path::PathBuf>, AppError> {
     let mut files = Vec::new();
     
     if dir.is_dir() {
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
+        let dir_entries = std::fs::read_dir(dir)
+            .map_err(|e| AppError::FileSystemError(format!("Failed to read directory {}: {}", dir.display(), e)))?;
+        
+        for entry in dir_entries {
+            let entry = entry
+                .map_err(|e| AppError::FileSystemError(format!("Failed to read directory entry: {}", e)))?;
             let path = entry.path();
             
             if let Some(ext) = path.extension() {

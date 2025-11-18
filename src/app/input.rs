@@ -251,7 +251,12 @@ impl ImageViewerApp {
 }
 
 fn move_with_fallback(src: &Path, dest: &Path) -> Result<(), io::Error> {
-    if let Some(parent) = dest.parent() { let _ = fs::create_dir_all(parent); }
+    if let Some(parent) = dest.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            eprintln!("Failed to create parent directory for {}: {}", dest.display(), e);
+            return Err(e);
+        }
+    }
     match fs::rename(src, dest) {
         Ok(()) => Ok(()),
         Err(e) => {

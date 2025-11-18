@@ -11,69 +11,89 @@ use crate::metadata_simple::ImageMetadata;
 use crate::event::ViewerEvent;
 use std::sync::mpsc;
 
+/// Main application state for the image viewer
 pub struct ImageViewerApp {
-    // Core state
+    /// Current directory containing images
     pub(crate) current_dir: PathBuf,
+    /// List of image files in the current directory
     pub(crate) image_files: Vec<PathBuf>,
+    /// Index of the currently displayed image
     pub(crate) current_index: usize,
     
-    // Image display
+    /// Currently displayed image
     pub(crate) current_image: Option<egui::TextureHandle>,
+    /// Current zoom factor
     pub(crate) zoom_factor: f32,
+    /// Current position of the image view
     pub(crate) image_position: egui::Vec2,
     
-    // Caches
+    /// Cache for loaded images
     pub(crate) image_cache: ImageCache,
+    /// Cache for image metadata
     pub(crate) metadata_cache: MetadataCache,
+    /// Cache for composition lines
     pub(crate) composition_cache: CompositionCache,
     
-    // Image loading
+    /// Loader for images
     pub(crate) image_loader: ImageLoader,
+    /// Preloader for adjacent images
     pub(crate) preloader: ImagePreloader,
+    /// Track pending image loading requests
     pub(crate) loading_requests: HashMap<PathBuf, Instant>,
     
-    // Metadata
+    /// Metadata for the current image
     pub(crate) current_metadata: Option<ImageMetadata>,
+    /// Loader for image metadata
     pub(crate) metadata_loader: MetadataLoader,
     
-    // Composition lines
+    /// Whether to show composition lines
     pub(crate) show_composition: bool,
+    /// Current type of composition guide
     pub(crate) composition_type: CompositionType,
     
-    // UI state
+    /// Whether the sidebar is visible
     pub(crate) show_sidebar: bool,
+    /// Width of the sidebar
     pub(crate) sidebar_width: f32,
+    /// Status message with expiration time
     pub(crate) status_message: Option<(String, Instant)>,
     
-    // Bookmarks (1-9 keys)
+    /// Bookmarks for quick navigation (keys 1-9)
     pub(crate) bookmarks: HashMap<usize, BookmarkState>,
     
-    // Image management
+    /// Information about the last moved image for undo functionality
     pub(crate) last_moved: Option<(PathBuf, PathBuf, String, usize)>, // source, dest, type, previous index
 
-    // Cache management
+    /// Time of last general cache cleanup
     pub(crate) last_cache_cleanup: Instant,
+    /// Time of last distant cache cleanup
     pub(crate) last_distant_cleanup: Instant,
 
-    // Event bus
+    /// Receiver for application events
     pub(crate) event_receiver: mpsc::Receiver<ViewerEvent>,
 
-    // Lifecycle
+    /// Whether the application should close
     pub(crate) should_close: bool,
 
-    // Preferences
+    /// Whether to sort images by newest first
     pub(crate) sort_newest_first: bool,
 
-    // Performance tuning
+    /// Maximum cached dimension for performance
     pub(crate) max_cached_dimension: u32,
 }
 
+/// Represents the state of a bookmarked image position
 #[derive(Clone, Debug)]
 pub(crate) struct BookmarkState {
+    /// Index of the image in the current directory
     pub(crate) index: usize,
+    /// Zoom level at the time of bookmarking
     pub(crate) zoom: f32,
+    /// Position of the image view at the time of bookmarking
     pub(crate) position: egui::Vec2,
+    /// Whether composition lines were visible
     pub(crate) composition: bool,
+    /// The type of composition guide that was active
     pub(crate) composition_type: CompositionType,
 }
 

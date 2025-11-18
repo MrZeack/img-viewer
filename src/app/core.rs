@@ -14,8 +14,18 @@ impl ImageViewerApp {
         let (event_sender, event_receiver) = mpsc::channel();
         let event_bus = EventBus::new(event_sender);
 
-        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let image_files = get_image_files(&current_dir, config.browsing.sort_newest_first).unwrap_or_default();
+        let current_dir = std::env::current_dir()
+            .unwrap_or_else(|err| {
+                eprintln!("Warning: Could not get current directory: {}", err);
+                PathBuf::from(".")
+            });
+        let image_files = match get_image_files(&current_dir, config.browsing.sort_newest_first) {
+            Ok(files) => files,
+            Err(e) => {
+                eprintln!("Failed to get image files: {}", e);
+                Vec::new()
+            }
+        };
         
         let image_cache = create_image_cache(config.cache.image_capacity);
         let preview_dim = config.performance.max_cached_dimension.min(1024);
@@ -27,9 +37,15 @@ impl ImageViewerApp {
         );
         
         // Create directories for image management
-        std::fs::create_dir_all(current_dir.join("best")).ok();
-        std::fs::create_dir_all(current_dir.join("worse")).ok();
-        std::fs::create_dir_all(current_dir.join("deleted")).ok();
+        if let Err(e) = std::fs::create_dir_all(current_dir.join("best")) {
+            eprintln!("Failed to create 'best' directory: {}", e);
+        }
+        if let Err(e) = std::fs::create_dir_all(current_dir.join("worse")) {
+            eprintln!("Failed to create 'worse' directory: {}", e);
+        }
+        if let Err(e) = std::fs::create_dir_all(current_dir.join("deleted")) {
+            eprintln!("Failed to create 'deleted' directory: {}", e);
+        }
         
         let mut app = Self {
             current_dir,
