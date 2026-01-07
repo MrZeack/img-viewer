@@ -1,6 +1,6 @@
 [package]
 name = "img_viewer"
-version = "0.1.9"
+version = "0.1.12"
 edition = "2021"
 
 [dependencies]
@@ -15,8 +15,15 @@ rfd = "0.14"
 serde = { version = "1.0", features = ["derive"] }
 kamadak-exif = "0.6.1"
 toml = "0.9.5"
+libheif-rs = "1.0"
+quickraw = "0.1.6"
+little_exif = "0.6"
+memmap2 = "0.9"
 
 [profile.release]
 lto = true
 codegen-units = 1
 panic = "abort"
+
+[dev-dependencies]
+tempfile = "3.8"

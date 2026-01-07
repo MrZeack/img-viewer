@@ -10,6 +10,8 @@ use std::sync::Arc;
 use std::collections::HashSet;
 use std::sync::Mutex;
 use crate::errors::AppError;
+use libheif_rs::{HeifContext, LibHeif};
+use quickraw::Export;
 
 /// Represents a successfully loaded image
 #[derive(Debug, Clone)]
@@ -80,8 +82,18 @@ fn load_image_sync(request: LoadRequest) -> Result<LoadedImage, AppError> {
         .map_err(|e| AppError::FileSystemError(format!("Failed to read image file {}: {}", request.path.display(), e)))?;
     
     // Determine image format
-    let format = image::guess_format(&data)
-        .map_err(|e| AppError::ImageLoadError(format!("Failed to guess image format for {}: {}", request.path.display(), e)))?;
+    // Determine image format
+    let format = image::guess_format(&data);
+    
+    // Handle ARW, CR3 and HIF specifically if format is unknown or we want to force check extensions
+    let path_str = request.path.to_string_lossy().to_lowercase();
+    if path_str.ends_with(".arw") || path_str.ends_with(".cr3") {
+        return load_raw_preview(&data, request.target_size);
+    } else if path_str.ends_with(".hif") || path_str.ends_with(".heic") {
+        return load_hif(&data);
+    }
+
+    let format = format.map_err(|e| AppError::ImageLoadError(format!("Failed to guess image format for {}: {}", request.path.display(), e)))?;
     
     // For JPEG images, use optimized loading
     let img = if format == ImageFormat::Jpeg {
@@ -144,6 +156,121 @@ fn load_jpeg_optimized(data: &[u8], target_size: Option<(u32, u32)>) -> Result<D
     Ok(img)
 }
 
+fn load_raw_preview(data: &[u8], target_size: Option<(u32, u32)>) -> Result<LoadedImage, AppError> {
+    // Try to extract the embedded JPEG preview/thumbnail using quickraw first
+    let jpg_data = match Export::export_thumbnail_data(data) {
+        Ok((data, _orientation)) => data.to_vec(),
+        Err(_) => {
+            // If quickraw fails (e.g. for CR3), try manual extraction of the largest JPEG
+            extract_largest_jpeg(data)
+                .ok_or_else(|| AppError::ImageLoadError("Failed to extract RAW preview (quickraw and manual fallback failed)".to_string()))?
+        }
+    };
+        
+    // Load the JPEG data
+    let img = image::load_from_memory_with_format(&jpg_data, ImageFormat::Jpeg)
+        .map_err(|e| AppError::ImageLoadError(format!("Failed to load extracted RAW preview: {}", e)))?;
+        
+    // Resize if needed
+    let img = if let Some((w, h)) = target_size {
+        img.resize(w, h, image::imageops::FilterType::Triangle)
+    } else {
+        img
+    };
+    
+    let color_image = dynamic_image_to_color_image(&img);
+    Ok(LoadedImage { image: color_image })
+}
+
+fn extract_largest_jpeg(data: &[u8]) -> Option<Vec<u8>> {
+    let mut best_jpeg = None;
+    let mut max_size = 0;
+    
+    let mut i = 0;
+    // Simple heuristic to find JPEG streams (FF D8 ... FF D9)
+    // We limit search to avoid performance issues on huge files if possible, 
+    // but for CR3 we might need to scan deep. 
+    // Optimization: Valid JPEGs usually start at aligned offsets or specific atom positions,
+    // but byte scanning is fast enough for 50MB files in Rust.
+    
+    while i < data.len().saturating_sub(2) {
+        // Search for JPEG SOI (Start of Image): FF D8
+        // Note: Some might use FF D8 FF but FF D8 is the marker.
+        // Standard JPEG is FF D8 FF E0/E1/DB...
+        if data[i] == 0xFF && data[i+1] == 0xD8 {
+            let start = i;
+            let mut end = 0;
+            // Search for EOI (End of Image): FF D9
+            let mut j = start + 2;
+            while j < data.len().saturating_sub(1) {
+                if data[j] == 0xFF && data[j+1] == 0xD9 {
+                    end = j + 2;
+                    let size = end - start;
+                    // Filter out very small thumbnails (e.g. < 10KB) if we have candidates,
+                    // or just pick the largest one.
+                    if size > max_size {
+                        max_size = size;
+                        best_jpeg = Some((start, end));
+                    }
+                    // Jump index
+                    i = end - 1;
+                    break;
+                }
+                j += 1;
+            }
+            if end == 0 {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    
+    best_jpeg.map(|(start, end)| data[start..end].to_vec())
+}
+
+fn load_hif(data: &[u8]) -> Result<LoadedImage, AppError> {
+    let lib_heif = LibHeif::new();
+    let ctx = HeifContext::read_from_bytes(data)
+        .map_err(|e| AppError::ImageLoadError(format!("Failed to read HEIF data: {}", e)))?;
+        
+    let handle = ctx.primary_image_handle()
+        .map_err(|e| AppError::ImageLoadError(format!("Failed to get primary image handle: {}", e)))?;
+        
+    // Decode the image
+    let image = lib_heif.decode(&handle, libheif_rs::ColorSpace::Rgb(libheif_rs::RgbChroma::Rgb), None)
+        .map_err(|e| AppError::ImageLoadError(format!("Failed to decode HEIF image: {}", e)))?;
+        
+    let planes = image.planes();
+    let interleaved_plane = planes.interleaved
+        .ok_or_else(|| AppError::ImageLoadError("No interleaved plane found in HEIF image".to_string()))?;
+        
+    let width = image.width();
+    let height = image.height();
+    let stride = interleaved_plane.stride;
+    let data = interleaved_plane.data;
+    
+    // Create DynamicImage from raw data
+    // The data is likely RGB8 or RGBA8 depending on how we decoded.
+    // We requested Rgb, so it should be RGB.
+    
+    // We need to be careful about stride.
+    let mut buffer = Vec::with_capacity((width * height * 3) as usize);
+    for y in 0..height {
+        let start = y as usize * stride;
+        let end = start + (width as usize * 3);
+        buffer.extend_from_slice(&data[start..end]);
+    }
+    
+    let img_buffer = image::ImageBuffer::<image::Rgb<u8>, Vec<u8>>::from_raw(width, height, buffer)
+        .ok_or_else(|| AppError::ImageLoadError("Failed to create image buffer from HEIF data".to_string()))?;
+        
+    let dynamic_image = DynamicImage::ImageRgb8(img_buffer);
+    let color_image = dynamic_image_to_color_image(&dynamic_image);
+    
+    Ok(LoadedImage { image: color_image })
+}
+
 fn dynamic_image_to_color_image(img: &DynamicImage) -> ColorImage {
     let rgb_image = img.to_rgb8();
     let pixels = rgb_image
@@ -171,7 +298,7 @@ pub fn get_image_files(dir: &Path, newest_first: bool) -> Result<Vec<std::path::
             
             if let Some(ext) = path.extension() {
                 let ext = ext.to_string_lossy().to_lowercase();
-                if matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "bmp" | "tiff" | "webp") {
+                if matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "bmp" | "tiff" | "webp" | "hif" | "heic" | "arw" | "cr3") {
                     files.push(path);
                 }
             }
@@ -185,6 +312,38 @@ pub fn get_image_files(dir: &Path, newest_first: bool) -> Result<Vec<std::path::
     }
     
     Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_supported_extensions() {
+        let dir = tempdir().unwrap();
+        let extensions = vec!["jpg", "jpeg", "png", "bmp", "tiff", "webp", "hif", "heic", "arw", "cr3"];
+        
+        for ext in &extensions {
+            let file_path = dir.path().join(format!("test.{}", ext));
+            File::create(file_path).unwrap();
+        }
+        
+        // Add an unsupported file
+        File::create(dir.path().join("test.txt")).unwrap();
+        
+        let files = get_image_files(dir.path(), false).unwrap();
+        assert_eq!(files.len(), extensions.len());
+        
+        let found_extensions: Vec<String> = files.iter()
+            .map(|p| p.extension().unwrap().to_string_lossy().to_lowercase())
+            .collect();
+            
+        for ext in extensions {
+            assert!(found_extensions.contains(&ext.to_string()));
+        }
+    }
 }
 
 // Preloader for adjacent images

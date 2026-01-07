@@ -1,9 +1,11 @@
 use chrono::{DateTime, Local};
 use std::path::Path;
 use serde::{Deserialize, Serialize};
-use exif::Value;
 use std::io::BufReader;
 use crate::errors::AppError;
+use exif::Value;
+use std::fs::File;
+use memmap2::Mmap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageMetadata {
@@ -11,7 +13,7 @@ pub struct ImageMetadata {
     pub image_info: ImageInfo,
     pub exif_info: Option<ExifInfo>,
 }
-
+// ... (struct definitions unchanged) ...
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileInfo {
     pub name: String,
@@ -53,7 +55,7 @@ pub struct ExifInfo {
 pub fn extract_metadata(path: &Path) -> Result<ImageMetadata, AppError> {
     let metadata = std::fs::metadata(path)
         .map_err(|e| AppError::MetadataError(format!("Failed to get file metadata for {}: {}", path.display(), e)))?;
-    
+
     // File info
     let file_info = FileInfo {
         name: path.file_name()
@@ -78,29 +80,125 @@ pub fn extract_metadata(path: &Path) -> Result<ImageMetadata, AppError> {
             .to_string_lossy()
             .to_string(),
     };
+
+    // Optimization: Memory map large files to avoid reading them fully into heap memory
+    // This is crucial for performance with large RAW files.
+    let mmap = if file_info.size > 0 {
+        if let Ok(file) = File::open(path) {
+            unsafe { Mmap::map(&file).ok() }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     
+    let file_data_slice = mmap.as_deref();
+
     // Image basic info without full decode
-    let (w, h) = image::image_dimensions(path)
-        .map_err(|e| AppError::MetadataError(format!("Failed to get image dimensions for {}: {}", path.display(), e)))?;
-    let dimensions = (w, h);
+    let dimensions = if path.extension().map_or(false, |ext| {
+        let ext = ext.to_string_lossy().to_lowercase();
+        ext == "hif" || ext == "heic" || ext == "arw" || ext == "cr3"
+    }) {
+        // For HEIF and RAW files, we need special handling
+        if path.extension().map_or(false, |ext| {
+            let ext = ext.to_string_lossy().to_lowercase();
+            ext == "hif" || ext == "heic"
+        }) {
+            use libheif_rs::HeifContext;
+            
+            // We need to ensure the data lives long enough for HeifContext
+            let temp_data = if file_data_slice.is_none() {
+                 std::fs::read(path).ok()
+            } else {
+                 None
+            };
+            
+            let data_to_use = if let Some(d) = &temp_data {
+                d.as_slice()
+            } else if let Some(d) = file_data_slice {
+                d
+            } else {
+                &[]
+            };
+
+            let ctx = if !data_to_use.is_empty() {
+                 HeifContext::read_from_bytes(data_to_use).ok()
+            } else {
+                 None
+            };
+
+            if let Some(ctx) = ctx {
+                 if let Ok(handle) = ctx.primary_image_handle() {
+                     (handle.width(), handle.height())
+                 } else {
+                     (0, 0)
+                 }
+            } else {
+                 (0, 0)
+            }
+        }
+        // For ARW and CR3 files
+        else if path.extension().map_or(false, |ext| {
+            let ext = ext.to_string_lossy().to_lowercase();
+            ext == "arw" || ext == "cr3"
+        }) {
+            if let Some(data) = file_data_slice {
+                // Try quickraw first
+                let jpg_data = match quickraw::Export::export_thumbnail_data(data) {
+                    Ok((d, orientation)) => {
+                        Some((d.to_vec(), orientation as u32))
+                    },
+                    Err(_) => {
+                        // Fallback to manual extraction
+                        extract_largest_jpeg(data).map(|d| (d, 1))
+                    }
+                };
+                
+                if let Some((jpg_data, orientation)) = jpg_data {
+                    if let Ok(img) = image::load_from_memory_with_format(&jpg_data, image::ImageFormat::Jpeg) {
+                         let (mut w, mut h) = (img.width(), img.height());
+                         // Adjust for orientation
+                         if matches!(orientation, 5 | 6 | 7 | 8) {
+                             std::mem::swap(&mut w, &mut h);
+                         }
+                         (w, h)
+                    } else {
+                        (6000, 4000)
+                    }
+                } else {
+                     (6000, 4000)
+                }
+            } else {
+                // If mapping failed, try old method (slow) or just return fallback
+                // We fallback here to avoid erroring out completely
+                (6000, 4000)
+            }
+        } else {
+            image::image_dimensions(path).unwrap_or((0, 0))
+        }
+    } else {
+        image::image_dimensions(path).unwrap_or((0, 0))
+    };
+
     let megapixels = (dimensions.0 as f64 * dimensions.1 as f64) / 1_000_000.0;
-    
+
     // Calculate aspect ratio
-    let gcd = gcd(dimensions.0, dimensions.1);
-    let ratio_w = dimensions.0 / gcd;
-    let ratio_h = dimensions.1 / gcd;
+    let gcd_val = gcd(dimensions.0, dimensions.1);
+    let ratio_w = if gcd_val > 0 { dimensions.0 / gcd_val } else { 0 };
+    let ratio_h = if gcd_val > 0 { dimensions.1 / gcd_val } else { 0 };
     let aspect_ratio = format!("{}:{}", ratio_w, ratio_h);
-    
+
     let image_info = ImageInfo {
         dimensions,
         megapixels,
         aspect_ratio,
         format: guess_format_from_path(path),
     };
-    
-    // Extract EXIF data directly from file
-    let exif_info = extract_exif_data_from_file(path);
-    
+
+    // Extract EXIF data based on file format, passing the mapped data
+    let exif_info = extract_exif_data_by_format(path, file_data_slice);
+
     Ok(ImageMetadata {
         file_info,
         image_info,
@@ -123,17 +221,353 @@ pub fn format_file_size(size: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
     let mut size = size as f64;
     let mut unit_index = 0;
-    
+
     while size >= 1024.0 && unit_index < UNITS.len() - 1 {
         size /= 1024.0;
         unit_index += 1;
     }
-    
+
     if unit_index == 0 {
         format!("{} {}", size as u64, UNITS[unit_index])
     } else {
         format!("{:.1} {}", size, UNITS[unit_index])
     }
+}
+
+fn extract_exif_data_by_format(path: &Path, data_slice: Option<&[u8]>) -> Option<ExifInfo> {
+    let path_str = path.to_string_lossy().to_lowercase();
+
+    if path_str.ends_with(".hif") || path_str.ends_with(".heic") {
+        // Handle HEIF files using little_exif
+        extract_heif_exif_data(path, data_slice)
+    } else if path_str.ends_with(".arw") || path_str.ends_with(".cr3") {
+        // Handle ARW and CR3 files using quickraw and TIFF format
+        extract_raw_exif_data(path, data_slice)
+    } else {
+        // Use the original EXIF extraction for other formats
+        extract_exif_data_from_file(path)
+    }
+}
+
+fn extract_heif_exif_data(path: &Path, data_slice: Option<&[u8]>) -> Option<ExifInfo> {
+    use libheif_rs::HeifContext;
+
+    // Use mapped data or read from file
+    let temp_data = if data_slice.is_none() {
+         std::fs::read(path).ok()
+    } else {
+         None
+    };
+    
+    let data_to_use = if let Some(d) = &temp_data {
+        d.as_slice()
+    } else if let Some(d) = data_slice {
+        d
+    } else {
+        return None;
+    };
+    
+    let ctx = HeifContext::read_from_bytes(data_to_use).ok()?;
+
+    let handle = match ctx.primary_image_handle() {
+        Ok(handle) => handle,
+        Err(_) => return None,
+    };
+
+    // Get Exif metadata IDs
+    let mut item_ids = [libheif_rs::ItemId::default(); 1]; // We only need the first one
+    let count = handle.metadata_block_ids(&mut item_ids, "Exif".as_bytes());
+
+    if count == 0 {
+        return None;
+    }
+
+    // Use the metadata method to get the actual data
+    let exif_data = match handle.metadata(item_ids[0]) {
+        Ok(data) => data,
+        Err(_) => return None,
+    };
+
+    // Extract EXIF bytes (skip the 4-byte TIFF header if present)
+    let exif_bytes = if exif_data.len() > 4 {
+        // The first 4 bytes may contain TIFF header offset
+        &exif_data[4..]
+    } else {
+        &exif_data
+    };
+
+    // Directly try to parse the EXIF data
+    let mut cursor = std::io::Cursor::new(exif_bytes);
+    let exif_reader = exif::Reader::new();
+
+    // Try parsing EXIF data directly
+    match exif_reader.read_from_container(&mut cursor) {
+        Ok(exif) => {
+            convert_kamadak_exif_to_exif_info(&exif)
+        },
+        Err(_) => {
+            // If direct parsing fails, try parsing as a raw EXIF structure
+            // Check if it starts with EXIF marker
+            let exif_data_without_header = if exif_bytes.len() > 6 && &exif_bytes[0..6] == b"Exif\0\0" {
+                &exif_bytes[6..]  // Skip "Exif" + 2 null bytes
+            } else {
+                exif_bytes
+            };
+
+            let mut cursor = std::io::Cursor::new(exif_data_without_header);
+            match exif_reader.read_from_container(&mut cursor) {
+                Ok(exif) => {
+                    convert_kamadak_exif_to_exif_info(&exif)
+                },
+                Err(_) => {
+                    None
+                },
+            }
+        },
+    }
+}
+
+fn extract_raw_exif_data(path: &Path, data_slice: Option<&[u8]>) -> Option<ExifInfo> {
+    // For RAW files, we should try to extract EXIF directly from the file
+    // which is in TIFF format that can contain EXIF data
+
+    // First, try to extract EXIF directly from the RAW file's TIFF structure
+    match extract_tiff_exif_data(path) {
+        Some(exif_info) => {
+            return Some(exif_info);
+        },
+        None => {
+            // If that doesn't work, try to use the quickraw approach or manual
+            if let Some(data) = data_slice {
+                match quickraw::Export::export_thumbnail_data(data) {
+                    Ok((jpg_data, _orientation)) => {
+                        let file = std::io::Cursor::new(jpg_data);
+                        let exif_reader = exif::Reader::new();
+                        match exif_reader.read_from_container(&mut std::io::BufReader::new(file)) {
+                            Ok(exif) => convert_kamadak_exif_to_exif_info(&exif),
+                            Err(_) => None,
+                        }
+                    },
+                    Err(_) => {
+                        // Fallback
+                        if let Some(jpg_data) = extract_largest_jpeg(data) {
+                            let file = std::io::Cursor::new(jpg_data);
+                            let exif_reader = exif::Reader::new();
+                            match exif_reader.read_from_container(&mut std::io::BufReader::new(file)) {
+                                Ok(exif) => convert_kamadak_exif_to_exif_info(&exif),
+                                Err(_) => None,
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                }
+            } else {
+                // If no data slice provided, read file (should be avoided now, but keep as fallback)
+                let data = match std::fs::read(path) {
+                    Ok(data) => data,
+                    Err(_) => return None,
+                };
+                
+                 match quickraw::Export::export_thumbnail_data(&data) {
+                    Ok((jpg_data, _orientation)) => {
+                        let file = std::io::Cursor::new(jpg_data);
+                        let exif_reader = exif::Reader::new();
+                        match exif_reader.read_from_container(&mut std::io::BufReader::new(file)) {
+                            Ok(exif) => convert_kamadak_exif_to_exif_info(&exif),
+                            Err(_) => None,
+                        }
+                    },
+                    Err(_) => {
+                        if let Some(jpg_data) = extract_largest_jpeg(&data) {
+                            let file = std::io::Cursor::new(jpg_data);
+                            let exif_reader = exif::Reader::new();
+                            match exif_reader.read_from_container(&mut std::io::BufReader::new(file)) {
+                                Ok(exif) => convert_kamadak_exif_to_exif_info(&exif),
+                                Err(_) => None,
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn extract_largest_jpeg(data: &[u8]) -> Option<Vec<u8>> {
+    let mut best_jpeg = None;
+    let mut max_size = 0;
+    
+    let mut i = 0;
+    
+    while i < data.len().saturating_sub(2) {
+        if data[i] == 0xFF && data[i+1] == 0xD8 {
+            let start = i;
+            let mut end = 0;
+            let mut j = start + 2;
+            while j < data.len().saturating_sub(1) {
+                if data[j] == 0xFF && data[j+1] == 0xD9 {
+                    end = j + 2;
+                    let size = end - start;
+                    if size > max_size {
+                        max_size = size;
+                        best_jpeg = Some((start, end));
+                    }
+                    i = end - 1;
+                    break;
+                }
+                j += 1;
+            }
+            if end == 0 {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    
+    best_jpeg.map(|(start, end)| data[start..end].to_vec())
+}
+
+
+fn extract_tiff_exif_data(path: &Path) -> Option<ExifInfo> {
+    // ARW files are based on TIFF format, so we can try to read EXIF from the TIFF structure
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return None,
+    };
+
+    let mut buf_reader = std::io::BufReader::new(file);
+
+    let exif_reader = exif::Reader::new();
+    match exif_reader.read_from_container(&mut buf_reader) {
+        Ok(exif) => {
+            convert_kamadak_exif_to_exif_info(&exif)
+        },
+        Err(_) => {
+            None
+        },
+    }
+}
+
+fn convert_kamadak_exif_to_exif_info(exif: &exif::Exif) -> Option<ExifInfo> {
+    let mut exif_info = ExifInfo {
+        camera_make: None,
+        camera_model: None,
+        date_taken: None,
+        shutter_speed: None,
+        aperture: None,
+        iso: None,
+        focal_length: None,
+        flash: None,
+        lens_model: None,
+        gps_location: None,
+        color_space: None,
+        metering_mode: None,
+        exposure_bias_value: None,
+        aperture_value: None,
+        sensitivity_type: None,
+        exposure_program: None,
+        orientation: None,
+    };
+
+    // Extract camera make
+    if let Some(field) = exif.get_field(exif::Tag::Make, exif::In::PRIMARY) {
+        exif_info.camera_make = Some(field.display_value().with_unit(exif).to_string());
+    }
+
+    // Extract camera model
+    if let Some(field) = exif.get_field(exif::Tag::Model, exif::In::PRIMARY) {
+        exif_info.camera_model = Some(field.display_value().with_unit(exif).to_string());
+    }
+
+    // Extract date taken (DateTime Original)
+    if let Some(field) = exif.get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY) {
+        let datetime_str = field.display_value().with_unit(exif).to_string();
+        exif_info.date_taken = parse_exif_datetime(&datetime_str);
+    }
+
+    // Extract ISO (PhotographicSensitivity)
+    if let Some(field) = exif.get_field(exif::Tag::PhotographicSensitivity, exif::In::PRIMARY) {
+        if let Value::Short(values) = &field.value {
+            if !values.is_empty() {
+                exif_info.iso = Some(values[0] as u32);
+            }
+        }
+    }
+
+    // Extract focal length
+    if let Some(field) = exif.get_field(exif::Tag::FocalLength, exif::In::PRIMARY) {
+        exif_info.focal_length = Some(field.display_value().with_unit(exif).to_string());
+    }
+
+    // Extract aperture (FNumber)
+    if let Some(field) = exif.get_field(exif::Tag::FNumber, exif::In::PRIMARY) {
+        exif_info.aperture = Some(field.display_value().with_unit(exif).to_string());
+    }
+
+    // Extract shutter speed (ExposureTime)
+    if let Some(field) = exif.get_field(exif::Tag::ExposureTime, exif::In::PRIMARY) {
+        exif_info.shutter_speed = Some(field.display_value().with_unit(exif).to_string());
+    }
+
+    // Extract lens model
+    if let Some(field) = exif.get_field(exif::Tag::LensModel, exif::In::PRIMARY) {
+        exif_info.lens_model = Some(field.display_value().with_unit(exif).to_string());
+    }
+
+    // Extract flash information with descriptive text
+    if let Some(field) = exif.get_field(exif::Tag::Flash, exif::In::PRIMARY) {
+        exif_info.flash = Some(format_flash_value(&field.value));
+    }
+
+    // Extract ColorSpace
+    if let Some(field) = exif.get_field(exif::Tag::ColorSpace, exif::In::PRIMARY) {
+        exif_info.color_space = Some(format_color_space(&field.value));
+    }
+
+    // Extract MeteringMode
+    if let Some(field) = exif.get_field(exif::Tag::MeteringMode, exif::In::PRIMARY) {
+        exif_info.metering_mode = Some(format_metering_mode(&field.value));
+    }
+
+    // Extract ExposureBiasValue
+    if let Some(field) = exif.get_field(exif::Tag::ExposureBiasValue, exif::In::PRIMARY) {
+        exif_info.exposure_bias_value = Some(field.display_value().with_unit(exif).to_string());
+    }
+
+    // Extract ApertureValue
+    if let Some(field) = exif.get_field(exif::Tag::ApertureValue, exif::In::PRIMARY) {
+        exif_info.aperture_value = Some(field.display_value().with_unit(exif).to_string());
+    }
+
+    // Extract SensitivityType
+    if let Some(field) = exif.get_field(exif::Tag::SensitivityType, exif::In::PRIMARY) {
+        exif_info.sensitivity_type = Some(format_sensitivity_type(&field.value));
+    }
+
+    // Extract ExposureProgram
+    if let Some(field) = exif.get_field(exif::Tag::ExposureProgram, exif::In::PRIMARY) {
+        exif_info.exposure_program = Some(format_exposure_program(&field.value));
+    }
+
+    // Extract Orientation
+    if let Some(field) = exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY) {
+        exif_info.orientation = Some(format_orientation(&field.value));
+    }
+
+    // Extract GPS location (simplified)
+    let lat = exif.get_field(exif::Tag::GPSLatitude, exif::In::PRIMARY);
+    let lon = exif.get_field(exif::Tag::GPSLongitude, exif::In::PRIMARY);
+    if let (Some(lat_field), Some(lon_field)) = (lat, lon) {
+        let lat_str = lat_field.display_value().with_unit(exif).to_string();
+        let lon_str = lon_field.display_value().with_unit(exif).to_string();
+        exif_info.gps_location = Some(format!("{}, {}", lat_str, lon_str));
+    }
+
+    Some(exif_info)
 }
 
 fn extract_exif_data_from_file(path: &Path) -> Option<ExifInfo> {

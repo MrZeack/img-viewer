@@ -13,14 +13,18 @@ pub enum ViewerEvent {
 #[derive(Clone)]
 pub struct EventBus {
     sender: mpsc::Sender<ViewerEvent>,
+    ctx: Option<egui::Context>,
 }
 
 impl EventBus {
-    pub fn new(sender: mpsc::Sender<ViewerEvent>) -> Self {
-        Self { sender }
+    pub fn new(sender: mpsc::Sender<ViewerEvent>, ctx: Option<egui::Context>) -> Self {
+        Self { sender, ctx }
     }
 
     pub fn publish(&self, event: ViewerEvent) {
         let _ = self.sender.send(event);
+        if let Some(ctx) = &self.ctx {
+            ctx.request_repaint();
+        }
     }
 }

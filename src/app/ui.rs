@@ -334,7 +334,7 @@ impl eframe::App for ImageViewerApp {
 
                     // Shift cached local lines to current image position
                     let offset = image_rect.min.to_vec2();
-                    for mut line in lines {
+                    for line in lines {
                         let start = line.start + offset;
                         let end = line.end + offset;
                         ui.painter().line_segment([start, end], line.stroke);

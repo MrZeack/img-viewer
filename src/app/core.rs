@@ -12,7 +12,7 @@ use std::sync::mpsc;
 impl ImageViewerApp {
     pub fn new(cc: &eframe::CreationContext<'_>, config: Config) -> Self {
         let (event_sender, event_receiver) = mpsc::channel();
-        let event_bus = EventBus::new(event_sender);
+        let event_bus = EventBus::new(event_sender, Some(cc.egui_ctx.clone()));
 
         let current_dir = std::env::current_dir()
             .unwrap_or_else(|err| {
