@@ -158,6 +158,7 @@ fn load_jpeg_optimized(data: &[u8], target_size: Option<(u32, u32)>) -> Result<D
 
 fn load_raw_preview(data: &[u8], target_size: Option<(u32, u32)>) -> Result<LoadedImage, AppError> {
     // Try to extract the embedded JPEG preview/thumbnail using quickraw first
+    // Note: quickraw's export_thumbnail_data usually returns the largest embedded preview
     let jpg_data = match Export::export_thumbnail_data(data) {
         Ok((data, _orientation)) => data.to_vec(),
         Err(_) => {
@@ -168,15 +169,16 @@ fn load_raw_preview(data: &[u8], target_size: Option<(u32, u32)>) -> Result<Load
     };
         
     // Load the JPEG data
-    let img = image::load_from_memory_with_format(&jpg_data, ImageFormat::Jpeg)
+    let mut img = image::load_from_memory_with_format(&jpg_data, ImageFormat::Jpeg)
         .map_err(|e| AppError::ImageLoadError(format!("Failed to load extracted RAW preview: {}", e)))?;
         
-    // Resize if needed
-    let img = if let Some((w, h)) = target_size {
-        img.resize(w, h, image::imageops::FilterType::Triangle)
-    } else {
-        img
-    };
+    // Resize if target_size is provided, otherwise keep the full preview resolution
+    if let Some((w, h)) = target_size {
+        // Only downscale if the image is larger than target_size
+        if img.width() > w || img.height() > h {
+            img = img.resize(w, h, image::imageops::FilterType::Triangle);
+        }
+    }
     
     let color_image = dynamic_image_to_color_image(&img);
     Ok(LoadedImage { image: color_image })

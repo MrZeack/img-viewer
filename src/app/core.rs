@@ -105,7 +105,19 @@ impl ImageViewerApp {
             ));
         } else {
             // Request image load
-            let d = self.max_cached_dimension;
+            let ext = current_path.extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            
+            // For RAW files, we allow a larger preview to avoid pixelation
+            // 4096 is a good balance between quality and memory for modern RAW previews
+            let d = if matches!(ext.as_str(), "arw" | "cr3") {
+                self.max_cached_dimension.max(4096)
+            } else {
+                self.max_cached_dimension
+            };
+            
             self.image_loader.load_image(current_path, Some((d, d)), true);
             self.loading_requests.insert(current_path.clone(), Instant::now());
         }
