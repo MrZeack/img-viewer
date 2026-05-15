@@ -6,7 +6,7 @@
   - `cache.rs`, `image_loader.rs`, `metadata_*`, `composition.rs`, `config.rs`.
 - Examples: `example/` (EXIF sample and a small demo).
 - Build scripts: `build.sh` (Unix) and `build.bat` (Windows).
-- Runtime folders: the app may create `best/`, `worse/`, and `deleted/` in the opened directory; a `config.toml` is created in the working directory on first run.
+- Runtime folders: the app may create `best/`, `worse/`, and `deleted/` in the opened directory; a `config.toml` is created in the standard user configuration directory (e.g., `~/.config/img-viewer/` on Linux) on first run.
 
 ## Build, Test, and Development Commands
 - Build (debug): `cargo build` — compile quickly for local iteration.

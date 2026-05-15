@@ -59,32 +59,52 @@ impl Default for Config {
     }
 }
 
+use directories::ProjectDirs;
+use std::path::PathBuf;
+
+/// Gets the path to the configuration file in the user's config directory
+fn get_config_path() -> Option<PathBuf> {
+    ProjectDirs::from("fyi", "voza", "img-viewer").map(|proj_dirs| {
+        let config_dir = proj_dirs.config_dir();
+        if !config_dir.exists() {
+            let _ = fs::create_dir_all(config_dir);
+        }
+        config_dir.join("config.toml")
+    })
+}
+
 pub fn load_config() -> Config {
-    match fs::read_to_string("config.toml") {
-        Ok(content) => match toml::from_str(&content) {
-            Ok(config) => config,
-            Err(err) => {
-                eprintln!("Failed to parse config.toml: {}, using default config", err);
-                create_default_config()
+    let config_path = get_config_path();
+
+    if let Some(path) = &config_path {
+        match fs::read_to_string(path) {
+            Ok(content) => match toml::from_str(&content) {
+                Ok(config) => return config,
+                Err(err) => {
+                    eprintln!("Failed to parse config.toml at {:?}: {}, using default config", path, err);
+                }
+            },
+            Err(_) => {
+                println!("config.toml not found at {:?}, creating a default one.", path);
             }
-        },
-        Err(_) => {
-            println!("config.toml not found, creating a default one.");
-            create_default_config()
         }
     }
+
+    create_default_config(config_path)
 }
 
 /// Creates and saves a default configuration file
-fn create_default_config() -> Config {
+fn create_default_config(path: Option<PathBuf>) -> Config {
     let config = Config::default();
-    match toml::to_string_pretty(&config) {
-        Ok(toml_string) => {
-            if let Err(e) = fs::write("config.toml", toml_string) {
-                eprintln!("Failed to write default config.toml: {}", e);
+    if let Some(path) = path {
+        match toml::to_string_pretty(&config) {
+            Ok(toml_string) => {
+                if let Err(e) = fs::write(path, toml_string) {
+                    eprintln!("Failed to write default config.toml: {}", e);
+                }
             }
+            Err(e) => eprintln!("Failed to serialize default config: {}", e),
         }
-        Err(e) => eprintln!("Failed to serialize default config: {}", e),
     }
     config
 }

@@ -52,13 +52,15 @@ OPTIONS:
     -h, --help          Show this help message
     -d, --debug         Build in debug mode (faster compile, slower runtime)
     -r, --release       Build in release mode (default, optimized)
-    --no-install        Don't install binary after building (default: install)
+    --install           Install binary after building (default)
+    --no-install        Don't install binary after building
     -s, --system        Install to system directory (/usr/local/bin) [requires sudo]
     --install-dir DIR   Custom installation directory (default: ~/.local/bin)
     -t, --target TARGET Cross-compile for specific target
     -v, --verbose       Verbose output
-    --no-native         Don't optimize for current CPU (default: optimize)
-    --install-deps      Install system dependencies
+    --no-native              Build without CPU-specific optimizations
+    --native                 Optimize for current CPU (default)
+    --install-deps           Build with system dependencies installation
     --clean             Clean build artifacts before building
 
 EXAMPLES:
@@ -99,6 +101,10 @@ while [[ $# -gt 0 ]]; do
             INSTALL=false
             shift
             ;;
+        --install)
+            INSTALL=true
+            shift
+            ;;
         -s|--system)
             SYSTEM_INSTALL=true
             INSTALL_DIR="/usr/local/bin"
@@ -118,6 +124,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-native)
             NATIVE=false
+            shift
+            ;;
+        --native)
+            NATIVE=true
             shift
             ;;
         --install-deps)

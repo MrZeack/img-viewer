@@ -1,7 +1,8 @@
 [package]
 name = "img_viewer"
-version = "0.1.12"
+version = "0.1.13"
 edition = "2021"
+default-run = "img_viewer"
 
 [dependencies]
 eframe = "0.28"
@@ -19,6 +20,7 @@ libheif-rs = "1.0"
 quickraw = "0.1.6"
 little_exif = "0.6"
 memmap2 = "0.9"
+directories = "5.0"
 
 [profile.release]
 lto = true
