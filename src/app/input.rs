@@ -185,13 +185,8 @@ impl ImageViewerApp {
         if let Some((original_path, moved_path, dir_type, prev_index)) = &self.last_moved.clone() {
             if moved_path.exists() {
                 if move_with_fallback(moved_path, original_path).is_ok() {
-                    // Re-insert at previous index
-                    let insert_pos = (*prev_index).min(self.image_files.len());
-                    self.image_files.insert(insert_pos, original_path.clone());
-                    self.current_index = insert_pos;
+                    apply_undo_state(self, original_path.clone(), *prev_index);
                     self.last_moved = None;
-                    self.current_image = None;
-                    self.current_metadata = None;
                     self.load_current_image(ctx);
 
                     self.set_status_message(&format!("Restored from {}/", dir_type), 3.0);
@@ -297,9 +292,33 @@ fn truncate_preview(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
+fn apply_undo_state(
+    app: &mut ImageViewerApp,
+    original_path: std::path::PathBuf,
+    prev_index: usize,
+) -> usize {
+    let insert_pos = prev_index.min(app.image_files.len());
+    app.image_files.insert(insert_pos, original_path);
+    app.current_index = insert_pos;
+    app.current_image = None;
+    app.current_metadata = None;
+    insert_pos
+}
+
 #[cfg(test)]
 mod tests {
+    use super::apply_undo_state;
     use super::truncate_preview;
+    use crate::cache::{CompositionCache, ImageCache, MetadataCache};
+    use crate::composition::CompositionType;
+    use crate::event::{EventBus, ViewerEvent};
+    use crate::image_loader::{ImageLoader, ImagePreloader};
+    use crate::metadata_loader::MetadataLoader;
+    use eframe::egui;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::mpsc;
+    use std::time::Instant;
 
     #[test]
     fn truncate_preview_handles_multibyte_text() {
@@ -312,5 +331,71 @@ mod tests {
     fn truncate_preview_keeps_short_text_intact() {
         let text = "abc";
         assert_eq!(truncate_preview(text, 20), "abc");
+    }
+
+    #[test]
+    fn apply_undo_state_restores_previous_index_and_clears_stale_view() {
+        let (tx, rx) = mpsc::channel::<ViewerEvent>();
+        let event_bus = EventBus::new(tx, None);
+        let image_loader = ImageLoader::new(1, event_bus.clone());
+        let preloader = ImagePreloader::new(
+            ImageCache::new(2),
+            1,
+            event_bus.clone(),
+            1,
+            image_loader.pending_requests(),
+        );
+        let mut app = super::super::state::ImageViewerApp {
+            current_dir: PathBuf::from("/tmp"),
+            image_files: vec![PathBuf::from("/tmp/a.jpg"), PathBuf::from("/tmp/c.jpg")],
+            current_index: 1,
+            current_image: None,
+            zoom_factor: 1.0,
+            image_position: egui::Vec2::ZERO,
+            image_cache: ImageCache::new(2),
+            metadata_cache: MetadataCache::new(2),
+            composition_cache: CompositionCache::new(2),
+            image_loader,
+            preloader,
+            loading_requests: HashMap::new(),
+            current_metadata: Some(crate::metadata_simple::ImageMetadata {
+                file_info: crate::metadata_simple::FileInfo {
+                    name: "c.jpg".to_string(),
+                    size: 1,
+                    created: None,
+                    modified: None,
+                    path: "/tmp".to_string(),
+                },
+                image_info: crate::metadata_simple::ImageInfo {
+                    dimensions: (1, 1),
+                    megapixels: 0.0,
+                    aspect_ratio: "1:1".to_string(),
+                    format: "JPG".to_string(),
+                },
+                exif_info: None,
+            }),
+            metadata_loader: MetadataLoader::new(1, event_bus.clone()),
+            show_composition: false,
+            composition_type: CompositionType::RuleOfThirds,
+            show_sidebar: true,
+            sidebar_width: 320.0,
+            status_message: None,
+            bookmarks: HashMap::new(),
+            last_moved: None,
+            last_cache_cleanup: Instant::now(),
+            last_distant_cleanup: Instant::now(),
+            event_receiver: rx,
+            should_close: false,
+            sort_newest_first: true,
+            max_cached_dimension: 1024,
+        };
+
+        let insert_pos = apply_undo_state(&mut app, PathBuf::from("/tmp/b.jpg"), 1);
+
+        assert_eq!(insert_pos, 1);
+        assert_eq!(app.current_index, 1);
+        assert_eq!(app.image_files[1], PathBuf::from("/tmp/b.jpg"));
+        assert!(app.current_image.is_none());
+        assert!(app.current_metadata.is_none());
     }
 }

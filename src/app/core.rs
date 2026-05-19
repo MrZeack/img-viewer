@@ -154,10 +154,7 @@ impl ImageViewerApp {
                     let path_str = path.to_string_lossy().to_string();
                     self.image_cache.put(path_str.clone(), image_arc.clone());
 
-                    if self
-                        .current_path()
-                        .is_some_and(|current_path| path == *current_path)
-                    {
+                    if should_apply_event(self.current_path(), &path) {
                         self.current_image = Some(ctx.load_texture(
                             path_str,
                             image_arc,
@@ -167,10 +164,7 @@ impl ImageViewerApp {
                     self.loading_requests.remove(&path);
                 }
                 ViewerEvent::MetadataReady(path, metadata) => {
-                    if self
-                        .current_path()
-                        .is_some_and(|current_path| path == *current_path)
-                    {
+                    if should_apply_event(self.current_path(), &path) {
                         self.current_metadata = Some(metadata.clone());
                     }
                     let path_str = path.to_string_lossy().to_string();
@@ -185,5 +179,38 @@ impl ImageViewerApp {
             message.to_string(),
             Instant::now() + std::time::Duration::from_secs_f32(duration_secs),
         ));
+    }
+}
+
+pub(crate) fn should_apply_event(
+    current_path: Option<&std::path::PathBuf>,
+    event_path: &std::path::PathBuf,
+) -> bool {
+    current_path.is_some_and(|path| path == event_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_apply_event;
+    use std::path::PathBuf;
+
+    #[test]
+    fn should_apply_event_accepts_matching_path() {
+        let current = PathBuf::from("/tmp/current.jpg");
+        let event_path = PathBuf::from("/tmp/current.jpg");
+        assert!(should_apply_event(Some(&current), &event_path));
+    }
+
+    #[test]
+    fn should_apply_event_rejects_stale_path() {
+        let current = PathBuf::from("/tmp/current.jpg");
+        let event_path = PathBuf::from("/tmp/stale.jpg");
+        assert!(!should_apply_event(Some(&current), &event_path));
+    }
+
+    #[test]
+    fn should_apply_event_rejects_missing_current_path() {
+        let event_path = PathBuf::from("/tmp/stale.jpg");
+        assert!(!should_apply_event(None, &event_path));
     }
 }
