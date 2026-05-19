@@ -17,7 +17,7 @@ impl ImageViewerApp {
         } else if ctx.input(|i| i.key_pressed(Key::D)) {
             self.delete_image(ctx);
         } else if ctx.input(|i| i.key_pressed(Key::U)) {
-            self.undo_last_move();
+            self.undo_last_move(ctx);
         } else if ctx.input(|i| i.key_pressed(Key::C)) {
             self.toggle_composition_lines();
         } else if ctx.input(|i| i.key_pressed(Key::ArrowUp)) {
@@ -50,7 +50,8 @@ impl ImageViewerApp {
 
     fn previous_image(&mut self, ctx: &Context) {
         if !self.image_files.is_empty() {
-            self.current_index = (self.current_index + self.image_files.len() - 1) % self.image_files.len();
+            self.current_index =
+                (self.current_index + self.image_files.len() - 1) % self.image_files.len();
             self.load_current_image(ctx);
         }
     }
@@ -89,6 +90,9 @@ impl ImageViewerApp {
                 // Load next image automatically
                 if !self.image_files.is_empty() {
                     self.load_current_image(ctx);
+                } else {
+                    self.current_image = None;
+                    self.current_metadata = None;
                 }
             } else {
                 self.set_status_message("Error moving image", 3.0);
@@ -125,6 +129,9 @@ impl ImageViewerApp {
                 // Load next image automatically
                 if !self.image_files.is_empty() {
                     self.load_current_image(ctx);
+                } else {
+                    self.current_image = None;
+                    self.current_metadata = None;
                 }
             } else {
                 self.set_status_message("Error moving image", 3.0);
@@ -149,7 +156,8 @@ impl ImageViewerApp {
                 self.clean_cache_for_moved_image(&current_path);
 
                 let prev_index = self.current_index;
-                self.last_moved = Some((current_path, dest_path, "deleted".to_string(), prev_index));
+                self.last_moved =
+                    Some((current_path, dest_path, "deleted".to_string(), prev_index));
                 self.image_files.remove(self.current_index);
 
                 if self.current_index >= self.image_files.len() && !self.image_files.is_empty() {
@@ -161,6 +169,9 @@ impl ImageViewerApp {
                 // Load next image automatically
                 if !self.image_files.is_empty() {
                     self.load_current_image(ctx);
+                } else {
+                    self.current_image = None;
+                    self.current_metadata = None;
                 }
             } else {
                 self.set_status_message("Error deleting image", 3.0);
@@ -170,7 +181,7 @@ impl ImageViewerApp {
         }
     }
 
-    fn undo_last_move(&mut self) {
+    fn undo_last_move(&mut self, ctx: &Context) {
         if let Some((original_path, moved_path, dir_type, prev_index)) = &self.last_moved.clone() {
             if moved_path.exists() {
                 if move_with_fallback(moved_path, original_path).is_ok() {
@@ -179,6 +190,9 @@ impl ImageViewerApp {
                     self.image_files.insert(insert_pos, original_path.clone());
                     self.current_index = insert_pos;
                     self.last_moved = None;
+                    self.current_image = None;
+                    self.current_metadata = None;
+                    self.load_current_image(ctx);
 
                     self.set_status_message(&format!("Restored from {}/", dir_type), 3.0);
                 } else {
@@ -226,14 +240,20 @@ impl ImageViewerApp {
             };
             self.bookmarks.insert(num, bookmark);
 
-            let filename = self.image_files.get(self.current_index)
+            let filename = self
+                .image_files
+                .get(self.current_index)
                 .and_then(|p| p.file_name())
                 .map(|n| n.to_string_lossy())
                 .unwrap_or_default();
 
             self.set_status_message(
-                &format!("Saved bookmark {}: {}...", num, &filename[..filename.len().min(20)]),
-                3.0
+                &format!(
+                    "Saved bookmark {}: {}...",
+                    num,
+                    truncate_preview(&filename, 20)
+                ),
+                3.0,
             );
         }
     }
@@ -253,7 +273,11 @@ impl ImageViewerApp {
 fn move_with_fallback(src: &Path, dest: &Path) -> Result<(), io::Error> {
     if let Some(parent) = dest.parent() {
         if let Err(e) = fs::create_dir_all(parent) {
-            eprintln!("Failed to create parent directory for {}: {}", dest.display(), e);
+            eprintln!(
+                "Failed to create parent directory for {}: {}",
+                dest.display(),
+                e
+            );
             return Err(e);
         }
     }
@@ -261,7 +285,32 @@ fn move_with_fallback(src: &Path, dest: &Path) -> Result<(), io::Error> {
         Ok(()) => Ok(()),
         Err(e) => {
             // Cross-device or permission issues: try copy + remove
-            fs::copy(src, dest).and_then(|_| fs::remove_file(src)).map(|_| ()).or(Err(e))
+            fs::copy(src, dest)
+                .and_then(|_| fs::remove_file(src))
+                .map(|_| ())
+                .or(Err(e))
         }
+    }
+}
+
+fn truncate_preview(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_preview;
+
+    #[test]
+    fn truncate_preview_handles_multibyte_text() {
+        let text = "niño-東京-café";
+        let truncated = truncate_preview(text, 6);
+        assert_eq!(truncated, "niño-東");
+    }
+
+    #[test]
+    fn truncate_preview_keeps_short_text_intact() {
+        let text = "abc";
+        assert_eq!(truncate_preview(text, 20), "abc");
     }
 }

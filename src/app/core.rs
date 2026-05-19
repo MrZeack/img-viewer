@@ -1,24 +1,23 @@
 use super::state::ImageViewerApp;
-use eframe::egui::{Context};
-use std::time::Instant;
-use std::path::PathBuf;
 use crate::cache::{create_image_cache, create_metadata_cache, CompositionCache};
-use crate::image_loader::{get_image_files, ImageLoader, ImagePreloader};
-use crate::metadata_loader::MetadataLoader;
 use crate::config::Config;
 use crate::event::{EventBus, ViewerEvent};
+use crate::image_loader::{get_image_files, ImageLoader, ImagePreloader};
+use crate::metadata_loader::MetadataLoader;
+use eframe::egui::Context;
+use std::path::PathBuf;
 use std::sync::mpsc;
+use std::time::Instant;
 
 impl ImageViewerApp {
     pub fn new(cc: &eframe::CreationContext<'_>, config: Config) -> Self {
         let (event_sender, event_receiver) = mpsc::channel();
         let event_bus = EventBus::new(event_sender, Some(cc.egui_ctx.clone()));
 
-        let current_dir = std::env::current_dir()
-            .unwrap_or_else(|err| {
-                eprintln!("Warning: Could not get current directory: {}", err);
-                PathBuf::from(".")
-            });
+        let current_dir = std::env::current_dir().unwrap_or_else(|err| {
+            eprintln!("Warning: Could not get current directory: {}", err);
+            PathBuf::from(".")
+        });
         let image_files = match get_image_files(&current_dir, config.browsing.sort_newest_first) {
             Ok(files) => files,
             Err(e) => {
@@ -26,16 +25,18 @@ impl ImageViewerApp {
                 Vec::new()
             }
         };
-        
+
         let image_cache = create_image_cache(config.cache.image_capacity);
+        let image_loader = ImageLoader::new(config.performance.loader_threads, event_bus.clone());
         let preview_dim = config.performance.max_cached_dimension.min(1024);
         let preloader = ImagePreloader::new(
             image_cache.clone(),
             config.performance.preload_distance,
             event_bus.clone(),
             preview_dim,
+            image_loader.pending_requests(),
         );
-        
+
         // Create directories for image management
         if let Err(e) = std::fs::create_dir_all(current_dir.join("best")) {
             eprintln!("Failed to create 'best' directory: {}", e);
@@ -46,7 +47,7 @@ impl ImageViewerApp {
         if let Err(e) = std::fs::create_dir_all(current_dir.join("deleted")) {
             eprintln!("Failed to create 'deleted' directory: {}", e);
         }
-        
+
         let mut app = Self {
             current_dir,
             image_files,
@@ -57,11 +58,14 @@ impl ImageViewerApp {
             image_cache,
             metadata_cache: create_metadata_cache(config.cache.metadata_capacity),
             composition_cache: CompositionCache::new(30),
-            image_loader: ImageLoader::new(config.performance.loader_threads, event_bus.clone()),
+            image_loader,
             preloader,
             loading_requests: std::collections::HashMap::new(),
             current_metadata: None,
-            metadata_loader: MetadataLoader::new((config.performance.loader_threads / 2).max(1), event_bus.clone()),
+            metadata_loader: MetadataLoader::new(
+                (config.performance.loader_threads / 2).max(1),
+                event_bus.clone(),
+            ),
             show_composition: false,
             composition_type: crate::composition::CompositionType::RuleOfThirds,
             show_sidebar: true,
@@ -76,26 +80,26 @@ impl ImageViewerApp {
             sort_newest_first: config.browsing.sort_newest_first,
             max_cached_dimension: config.performance.max_cached_dimension,
         };
-        
+
         if !app.image_files.is_empty() {
             app.load_current_image(&cc.egui_ctx);
         }
-        
+
         app
     }
-    
+
     pub(crate) fn load_current_image(&mut self, ctx: &Context) {
         self.load_current_image_with_reset(ctx, true);
     }
 
     pub(crate) fn load_current_image_with_reset(&mut self, ctx: &Context, reset_view: bool) {
-        if self.image_files.is_empty() {
+        let Some(current_path) = self.current_path().cloned() else {
+            self.current_image = None;
+            self.current_metadata = None;
             return;
-        }
-        
-        let current_path = &self.image_files[self.current_index];
+        };
         let path_str = current_path.to_string_lossy().to_string();
-        
+
         // Check cache first
         if let Some(cached_image_arc) = self.image_cache.get(&path_str) {
             self.current_image = Some(ctx.load_texture(
@@ -105,11 +109,12 @@ impl ImageViewerApp {
             ));
         } else {
             // Request image load
-            let ext = current_path.extension()
+            let ext = current_path
+                .extension()
                 .and_then(|e| e.to_str())
                 .unwrap_or("")
                 .to_lowercase();
-            
+
             // For RAW files, we allow a larger preview to avoid pixelation
             // 4096 is a good balance between quality and memory for modern RAW previews
             let d = if matches!(ext.as_str(), "arw" | "cr3") {
@@ -117,20 +122,23 @@ impl ImageViewerApp {
             } else {
                 self.max_cached_dimension
             };
-            
-            self.image_loader.load_image(current_path, Some((d, d)), true);
-            self.loading_requests.insert(current_path.clone(), Instant::now());
+
+            self.image_loader
+                .load_image(&current_path, Some((d, d)), true);
+            self.loading_requests
+                .insert(current_path.clone(), Instant::now());
         }
-        
+
         // Start preloading adjacent images
-        self.preloader.preload_adjacent(current_path, &self.image_files);
-        
+        self.preloader
+            .preload_adjacent(&current_path, &self.image_files);
+
         // Reset view state for new image only if requested
         if reset_view {
             self.zoom_factor = 1.0;
             self.image_position = egui::Vec2::ZERO;
         }
-        
+
         // Request metadata extraction
         let path = current_path.clone();
         self.metadata_loader.load_metadata(&path);
@@ -138,7 +146,7 @@ impl ImageViewerApp {
         // Aggressive cleanup of distant entries on navigation
         self.cleanup_distant_cache_entries();
     }
-    
+
     pub(crate) fn process_events(&mut self, ctx: &Context) {
         while let Ok(event) = self.event_receiver.try_recv() {
             match event {
@@ -146,7 +154,10 @@ impl ImageViewerApp {
                     let path_str = path.to_string_lossy().to_string();
                     self.image_cache.put(path_str.clone(), image_arc.clone());
 
-                    if path == self.image_files[self.current_index] {
+                    if self
+                        .current_path()
+                        .is_some_and(|current_path| path == *current_path)
+                    {
                         self.current_image = Some(ctx.load_texture(
                             path_str,
                             image_arc,
@@ -156,7 +167,10 @@ impl ImageViewerApp {
                     self.loading_requests.remove(&path);
                 }
                 ViewerEvent::MetadataReady(path, metadata) => {
-                    if path == self.image_files[self.current_index] {
+                    if self
+                        .current_path()
+                        .is_some_and(|current_path| path == *current_path)
+                    {
                         self.current_metadata = Some(metadata.clone());
                     }
                     let path_str = path.to_string_lossy().to_string();
@@ -169,7 +183,7 @@ impl ImageViewerApp {
     pub(crate) fn set_status_message(&mut self, message: &str, duration_secs: f32) {
         self.status_message = Some((
             message.to_string(),
-            Instant::now() + std::time::Duration::from_secs_f32(duration_secs)
+            Instant::now() + std::time::Duration::from_secs_f32(duration_secs),
         ));
     }
 }

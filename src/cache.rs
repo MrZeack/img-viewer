@@ -1,10 +1,11 @@
 //! Caching implementation for images, metadata, and composition lines
+use egui::ColorImage;
 use lru::LruCache;
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use std::collections::HashMap;
-use egui::ColorImage;
 
 /// Cache for image data with timestamp tracking for cleanup
 #[derive(Clone)]
@@ -32,9 +33,9 @@ pub type MetadataCache = TimestampedMetadataCache;
 impl TimestampedImageCache {
     pub fn new(capacity: usize) -> Self {
         Self {
-            cache: Arc::new(Mutex::new(
-                LruCache::new(NonZeroUsize::new(capacity).expect("Cache capacity must be non-zero"))
-            )),
+            cache: Arc::new(Mutex::new(LruCache::new(
+                NonZeroUsize::new(capacity).expect("Cache capacity must be non-zero"),
+            ))),
             timestamps: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -43,7 +44,10 @@ impl TimestampedImageCache {
         let value = self.cache.lock().unwrap().get(key).cloned();
         if value.is_some() {
             // refresh last-access timestamp on successful hit
-            self.timestamps.lock().unwrap().insert(key.to_string(), Instant::now());
+            self.timestamps
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), Instant::now());
         }
         value
     }
@@ -99,23 +103,21 @@ impl TimestampedImageCache {
 
 impl TimestampedImageCache {
     fn reconcile_timestamps_with_cache(&self) {
-        let keys: Vec<String> = {
+        let keys: HashSet<String> = {
             let cache = self.cache.lock().unwrap();
             cache.iter().map(|(k, _)| k.clone()).collect()
         };
         let mut ts = self.timestamps.lock().unwrap();
-        if ts.len() > keys.len() {
-            ts.retain(|k, _| keys.contains(k));
-        }
+        ts.retain(|k, _| keys.contains(k));
     }
 }
 
 impl TimestampedMetadataCache {
     pub fn new(capacity: usize) -> Self {
         Self {
-            cache: Arc::new(Mutex::new(
-                LruCache::new(NonZeroUsize::new(capacity).expect("Cache capacity must be non-zero"))
-            )),
+            cache: Arc::new(Mutex::new(LruCache::new(
+                NonZeroUsize::new(capacity).expect("Cache capacity must be non-zero"),
+            ))),
             timestamps: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -123,7 +125,10 @@ impl TimestampedMetadataCache {
     pub fn get(&self, key: &str) -> Option<crate::metadata_simple::ImageMetadata> {
         let value = self.cache.lock().unwrap().get(key).cloned();
         if value.is_some() {
-            self.timestamps.lock().unwrap().insert(key.to_string(), Instant::now());
+            self.timestamps
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), Instant::now());
         }
         value
     }
@@ -175,14 +180,12 @@ impl TimestampedMetadataCache {
 
 impl TimestampedMetadataCache {
     fn reconcile_timestamps_with_cache(&self) {
-        let keys: Vec<String> = {
+        let keys: HashSet<String> = {
             let cache = self.cache.lock().unwrap();
             cache.iter().map(|(k, _)| k.clone()).collect()
         };
         let mut ts = self.timestamps.lock().unwrap();
-        if ts.len() > keys.len() {
-            ts.retain(|k, _| keys.contains(k));
-        }
+        ts.retain(|k, _| keys.contains(k));
     }
 }
 
@@ -214,15 +217,22 @@ pub struct CompositionLine {
 impl CompositionCache {
     pub fn new(capacity: usize) -> Self {
         Self {
-            cache: Arc::new(Mutex::new(
-                LruCache::new(NonZeroUsize::new(capacity).expect("Cache capacity must be non-zero"))
-            )),
+            cache: Arc::new(Mutex::new(LruCache::new(
+                NonZeroUsize::new(capacity).expect("Cache capacity must be non-zero"),
+            ))),
             timestamps: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub fn get(&self, key: &str) -> Option<Vec<CompositionLine>> {
-        self.cache.lock().unwrap().get(key).cloned()
+        let value = self.cache.lock().unwrap().get(key).cloned();
+        if value.is_some() {
+            self.timestamps
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), Instant::now());
+        }
+        value
     }
 
     pub fn put(&self, key: String, lines: Vec<CompositionLine>) {
@@ -272,13 +282,11 @@ impl CompositionCache {
 
 impl CompositionCache {
     fn reconcile_timestamps_with_cache(&self) {
-        let keys: Vec<String> = {
+        let keys: HashSet<String> = {
             let cache = self.cache.lock().unwrap();
             cache.iter().map(|(k, _)| k.clone()).collect()
         };
         let mut ts = self.timestamps.lock().unwrap();
-        if ts.len() > keys.len() {
-            ts.retain(|k, _| keys.contains(k));
-        }
+        ts.retain(|k, _| keys.contains(k));
     }
 }

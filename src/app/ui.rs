@@ -1,9 +1,9 @@
 use super::state::ImageViewerApp;
-use eframe::egui::{self, CentralPanel, Context, SidePanel, TopBottomPanel};
-use std::time::Duration;
+use crate::composition::generate_composition_lines;
 use crate::image_loader::get_image_files;
 use crate::metadata_simple::format_file_size;
-use crate::composition::generate_composition_lines;
+use eframe::egui::{self, CentralPanel, Context, SidePanel, TopBottomPanel};
+use std::time::Duration;
 use std::time::Instant;
 
 impl eframe::App for ImageViewerApp {
@@ -46,7 +46,9 @@ impl eframe::App for ImageViewerApp {
                     if ui.button("Open Folder...").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_folder() {
                             self.current_dir = path;
-                            self.image_files = get_image_files(&self.current_dir, self.sort_newest_first).unwrap_or_default();
+                            self.image_files =
+                                get_image_files(&self.current_dir, self.sort_newest_first)
+                                    .unwrap_or_default();
                             self.current_index = 0;
                             self.current_image = None;
                             self.current_metadata = None;
@@ -67,8 +69,8 @@ impl eframe::App for ImageViewerApp {
         TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if !self.image_files.is_empty() {
-                    let current_file = self.image_files[self.current_index]
-                        .file_name()
+                    let current_file = self.current_path()
+                        .and_then(|path| path.file_name())
                         .unwrap_or_default()
                         .to_string_lossy();
 
@@ -150,7 +152,11 @@ impl eframe::App for ImageViewerApp {
                                 ui.separator();
                                 egui::Grid::new("image_info_grid").show(ui, |ui| {
                                     ui.label("Dimensiones:");
-                                    ui.label(format!("{}×{}", metadata.image_info.dimensions.0, metadata.image_info.dimensions.1));
+                                    ui.label(format!(
+                                        "{}×{}",
+                                        metadata.image_info.dimensions.0,
+                                        metadata.image_info.dimensions.1
+                                    ));
                                     ui.end_row();
 
                                     ui.label("Megapíxeles:");
@@ -260,7 +266,16 @@ impl eframe::App for ImageViewerApp {
                                             ui.label(gps);
                                             ui.end_row();
                                         }
-                                        if exif.camera_make.is_none() && exif.camera_model.is_none() && exif.date_taken.is_none() && exif.shutter_speed.is_none() && exif.aperture.is_none() && exif.iso.is_none() && exif.focal_length.is_none() && exif.lens_model.is_none() && exif.gps_location.is_none() {
+                                        if exif.camera_make.is_none()
+                                            && exif.camera_model.is_none()
+                                            && exif.date_taken.is_none()
+                                            && exif.shutter_speed.is_none()
+                                            && exif.aperture.is_none()
+                                            && exif.iso.is_none()
+                                            && exif.focal_length.is_none()
+                                            && exif.lens_model.is_none()
+                                            && exif.gps_location.is_none()
+                                        {
                                             ui.label("No hay información EXIF disponible");
                                             ui.end_row();
                                         }
@@ -299,12 +314,13 @@ impl eframe::App for ImageViewerApp {
                 }
 
                 // Draw image
-                let image_rect = egui::Rect::from_min_size(
-                    ui.min_rect().min + image_pos,
-                    display_size
-                );
+                let image_rect =
+                    egui::Rect::from_min_size(ui.min_rect().min + image_pos, display_size);
 
-                let response = ui.allocate_rect(ui.available_rect_before_wrap(), egui::Sense::click_and_drag());
+                let response = ui.allocate_rect(
+                    ui.available_rect_before_wrap(),
+                    egui::Sense::click_and_drag(),
+                );
 
                 ui.painter().image(
                     texture.id(),
@@ -318,9 +334,7 @@ impl eframe::App for ImageViewerApp {
                     // Cache by type + size only; lines are generated in local space (0,0..display_size)
                     let cache_key = format!(
                         "{:?}_{:.0}x{:.0}",
-                        self.composition_type,
-                        display_size.x,
-                        display_size.y
+                        self.composition_type, display_size.x, display_size.y
                     );
 
                     let local_rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), display_size);
@@ -395,7 +409,11 @@ impl eframe::App for ImageViewerApp {
         }
         if needs_repaint {
             // Aim ~60 FPS while active, or slower for status-only updates
-            let interval = if !self.loading_requests.is_empty() { 16 } else { 100 };
+            let interval = if !self.loading_requests.is_empty() {
+                16
+            } else {
+                100
+            };
             ctx.request_repaint_after(Duration::from_millis(interval));
         }
     }

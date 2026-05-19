@@ -5,10 +5,10 @@ use std::time::{Duration, Instant};
 
 use crate::cache::{CompositionCache, ImageCache, MetadataCache};
 use crate::composition::CompositionType;
+use crate::event::ViewerEvent;
 use crate::image_loader::{ImageLoader, ImagePreloader};
 use crate::metadata_loader::MetadataLoader;
 use crate::metadata_simple::ImageMetadata;
-use crate::event::ViewerEvent;
 use std::sync::mpsc;
 
 /// Main application state for the image viewer
@@ -19,48 +19,48 @@ pub struct ImageViewerApp {
     pub(crate) image_files: Vec<PathBuf>,
     /// Index of the currently displayed image
     pub(crate) current_index: usize,
-    
+
     /// Currently displayed image
     pub(crate) current_image: Option<egui::TextureHandle>,
     /// Current zoom factor
     pub(crate) zoom_factor: f32,
     /// Current position of the image view
     pub(crate) image_position: egui::Vec2,
-    
+
     /// Cache for loaded images
     pub(crate) image_cache: ImageCache,
     /// Cache for image metadata
     pub(crate) metadata_cache: MetadataCache,
     /// Cache for composition lines
     pub(crate) composition_cache: CompositionCache,
-    
+
     /// Loader for images
     pub(crate) image_loader: ImageLoader,
     /// Preloader for adjacent images
     pub(crate) preloader: ImagePreloader,
     /// Track pending image loading requests
     pub(crate) loading_requests: HashMap<PathBuf, Instant>,
-    
+
     /// Metadata for the current image
     pub(crate) current_metadata: Option<ImageMetadata>,
     /// Loader for image metadata
     pub(crate) metadata_loader: MetadataLoader,
-    
+
     /// Whether to show composition lines
     pub(crate) show_composition: bool,
     /// Current type of composition guide
     pub(crate) composition_type: CompositionType,
-    
+
     /// Whether the sidebar is visible
     pub(crate) show_sidebar: bool,
     /// Width of the sidebar
     pub(crate) sidebar_width: f32,
     /// Status message with expiration time
     pub(crate) status_message: Option<(String, Instant)>,
-    
+
     /// Bookmarks for quick navigation (keys 1-9)
     pub(crate) bookmarks: HashMap<usize, BookmarkState>,
-    
+
     /// Information about the last moved image for undo functionality
     pub(crate) last_moved: Option<(PathBuf, PathBuf, String, usize)>, // source, dest, type, previous index
 
@@ -98,6 +98,10 @@ pub(crate) struct BookmarkState {
 }
 
 impl ImageViewerApp {
+    pub(crate) fn current_path(&self) -> Option<&PathBuf> {
+        current_path_from(&self.image_files, self.current_index)
+    }
+
     pub(crate) fn clean_cache_for_moved_image(&mut self, moved_path: &PathBuf) {
         let path_str = moved_path.to_string_lossy().to_string();
 
@@ -110,13 +114,16 @@ impl ImageViewerApp {
         // we need to check for keys that start with the path
         let composition_keys: Vec<String> = {
             let cache_guard = self.composition_cache.cache.lock().unwrap();
-            cache_guard.iter().filter_map(|(key, _)| {
-                if key.starts_with(&path_str) {
-                    Some(key.clone())
-                } else {
-                    None
-                }
-            }).collect()
+            cache_guard
+                .iter()
+                .filter_map(|(key, _)| {
+                    if key.starts_with(&path_str) {
+                        Some(key.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
         };
 
         for key in composition_keys {
@@ -140,15 +147,18 @@ impl ImageViewerApp {
         const COMPOSITION_CACHE_THRESHOLD: usize = 25;
 
         if self.image_cache.len() > IMAGE_CACHE_THRESHOLD {
-            self.image_cache.cleanup_old_entries(Duration::from_secs(120)); // 2 minutes
+            self.image_cache
+                .cleanup_old_entries(Duration::from_secs(120)); // 2 minutes
         }
 
         if self.metadata_cache.len() > METADATA_CACHE_THRESHOLD {
-            self.metadata_cache.cleanup_old_entries(Duration::from_secs(180)); // 3 minutes
+            self.metadata_cache
+                .cleanup_old_entries(Duration::from_secs(180)); // 3 minutes
         }
 
         if self.composition_cache.len() > COMPOSITION_CACHE_THRESHOLD {
-            self.composition_cache.cleanup_old_entries(Duration::from_secs(60)); // 1 minute
+            self.composition_cache
+                .cleanup_old_entries(Duration::from_secs(60)); // 1 minute
         }
     }
 
@@ -165,7 +175,8 @@ impl ImageViewerApp {
         let end_index = (self.current_index + CACHE_DISTANCE).min(self.image_files.len() - 1);
 
         // Collect paths of images that should be kept
-        let keep_paths: std::collections::HashSet<String> = self.image_files[start_index..=end_index]
+        let keep_paths: std::collections::HashSet<String> = self.image_files
+            [start_index..=end_index]
             .iter()
             .map(|path| path.to_string_lossy().to_string())
             .collect();
@@ -173,13 +184,16 @@ impl ImageViewerApp {
         // Remove entries not in the keep list
         let image_keys: Vec<String> = {
             let cache_guard = self.image_cache.cache.lock().unwrap();
-            cache_guard.iter().filter_map(|(key, _): (&String, _)| {
-                if !keep_paths.contains(key) {
-                    Some(key.clone())
-                } else {
-                    None
-                }
-            }).collect()
+            cache_guard
+                .iter()
+                .filter_map(|(key, _): (&String, _)| {
+                    if !keep_paths.contains(key) {
+                        Some(key.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
         };
 
         for key in image_keys {
@@ -189,17 +203,43 @@ impl ImageViewerApp {
         // Same for metadata cache
         let metadata_keys: Vec<String> = {
             let cache_guard = self.metadata_cache.cache.lock().unwrap();
-            cache_guard.iter().filter_map(|(key, _): (&String, _)| {
-                if !keep_paths.contains(key) {
-                    Some(key.clone())
-                } else {
-                    None
-                }
-            }).collect()
+            cache_guard
+                .iter()
+                .filter_map(|(key, _): (&String, _)| {
+                    if !keep_paths.contains(key) {
+                        Some(key.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
         };
 
         for key in metadata_keys {
             self.metadata_cache.remove(&key);
         }
+    }
+}
+
+pub(crate) fn current_path_from(image_files: &[PathBuf], current_index: usize) -> Option<&PathBuf> {
+    image_files.get(current_index)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::current_path_from;
+    use std::path::PathBuf;
+
+    #[test]
+    fn current_path_from_returns_none_for_empty_list() {
+        let files: Vec<PathBuf> = Vec::new();
+        assert!(current_path_from(&files, 0).is_none());
+    }
+
+    #[test]
+    fn current_path_from_returns_path_when_index_is_valid() {
+        let files = vec![PathBuf::from("a.jpg")];
+        let expected = PathBuf::from("a.jpg");
+        assert_eq!(current_path_from(&files, 0), Some(&expected));
     }
 }

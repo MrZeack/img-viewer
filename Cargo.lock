@@ -2099,7 +2099,6 @@ dependencies = [
  "rayon",
  "rfd",
  "serde",
- "tempfile",
  "toml 0.9.5",
 ]
 
