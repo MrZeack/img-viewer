@@ -69,6 +69,7 @@ impl TimestampedImageCache {
         self.timestamps.lock().unwrap().remove(key);
     }
 
+    #[allow(dead_code)]
     pub fn clear(&self) {
         self.cache.lock().unwrap().clear();
         self.timestamps.lock().unwrap().clear();
@@ -122,6 +123,7 @@ impl TimestampedMetadataCache {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get(&self, key: &str) -> Option<crate::metadata_simple::ImageMetadata> {
         let value = self.cache.lock().unwrap().get(key).cloned();
         if value.is_some() {
@@ -150,6 +152,7 @@ impl TimestampedMetadataCache {
         self.timestamps.lock().unwrap().remove(key);
     }
 
+    #[allow(dead_code)]
     pub fn clear(&self) {
         self.cache.lock().unwrap().clear();
         self.timestamps.lock().unwrap().clear();

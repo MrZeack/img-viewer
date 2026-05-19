@@ -9,8 +9,10 @@ pub enum AppError {
     /// Error occurred during file system operations
     FileSystemError(String),
     /// Error occurred during configuration operations
+    #[allow(dead_code)]
     ConfigError(String),
     /// Error occurred during cache operations
+    #[allow(dead_code)]
     CacheError(String),
     /// Error occurred during metadata extraction
     MetadataError(String),
