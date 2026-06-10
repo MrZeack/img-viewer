@@ -384,7 +384,7 @@ pub fn get_image_files(
     }
 
     // Sort by modification date
-    files.sort_by_key(|a| {
+    files.sort_by_cached_key(|a| {
         a.metadata()
             .and_then(|m| m.modified())
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
