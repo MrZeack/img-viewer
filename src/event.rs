@@ -7,7 +7,7 @@ use std::sync::Arc;
 #[derive(Clone, Debug)]
 pub enum ViewerEvent {
     ImageLoaded(PathBuf, Arc<ColorImage>),
-    MetadataReady(PathBuf, ImageMetadata),
+    MetadataReady(PathBuf, Box<ImageMetadata>),
 }
 
 #[derive(Clone)]

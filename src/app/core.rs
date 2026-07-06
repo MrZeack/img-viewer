@@ -37,16 +37,6 @@ impl ImageViewerApp {
             image_loader.pending_requests(),
         );
 
-        // Create directories for image management
-        if let Err(e) = std::fs::create_dir_all(current_dir.join("best")) {
-            eprintln!("Failed to create 'best' directory: {}", e);
-        }
-        if let Err(e) = std::fs::create_dir_all(current_dir.join("worse")) {
-            eprintln!("Failed to create 'worse' directory: {}", e);
-        }
-        if let Err(e) = std::fs::create_dir_all(current_dir.join("deleted")) {
-            eprintln!("Failed to create 'deleted' directory: {}", e);
-        }
 
         let mut app = Self {
             current_dir,
@@ -164,6 +154,7 @@ impl ImageViewerApp {
                     self.loading_requests.remove(&path);
                 }
                 ViewerEvent::MetadataReady(path, metadata) => {
+                    let metadata = *metadata;
                     if should_apply_event(self.current_path(), &path) {
                         self.current_metadata = Some(metadata.clone());
                     }

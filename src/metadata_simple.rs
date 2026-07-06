@@ -96,12 +96,12 @@ pub fn extract_metadata(path: &Path) -> Result<ImageMetadata, AppError> {
     let file_data_slice = mmap.as_deref();
 
     // Image basic info without full decode
-    let dimensions = if path.extension().map_or(false, |ext| {
+    let dimensions = if path.extension().is_some_and(|ext| {
         let ext = ext.to_string_lossy().to_lowercase();
         ext == "hif" || ext == "heic" || ext == "arw" || ext == "cr3"
     }) {
         // For HEIF and RAW files, we need special handling
-        if path.extension().map_or(false, |ext| {
+        if path.extension().is_some_and(|ext| {
             let ext = ext.to_string_lossy().to_lowercase();
             ext == "hif" || ext == "heic"
         }) {
@@ -139,7 +139,7 @@ pub fn extract_metadata(path: &Path) -> Result<ImageMetadata, AppError> {
             }
         }
         // For ARW and CR3 files
-        else if path.extension().map_or(false, |ext| {
+        else if path.extension().is_some_and(|ext| {
             let ext = ext.to_string_lossy().to_lowercase();
             ext == "arw" || ext == "cr3"
         }) {
@@ -158,10 +158,10 @@ pub fn extract_metadata(path: &Path) -> Result<ImageMetadata, AppError> {
                 if let Some((jpg_data, orientation)) = jpg_data {
                     if let Ok(img) = image::load_from_memory_with_format(&jpg_data, image::ImageFormat::Jpeg) {
                          let (mut w, mut h) = (img.width(), img.height());
-                         // Adjust for orientation
-                         if matches!(orientation, 5 | 6 | 7 | 8) {
-                             std::mem::swap(&mut w, &mut h);
-                         }
+                          // Adjust for orientation
+                          if matches!(orientation, 5..=8) {
+                              std::mem::swap(&mut w, &mut h);
+                          }
                          (w, h)
                     } else {
                         (6000, 4000)
@@ -333,9 +333,7 @@ fn extract_raw_exif_data(path: &Path, data_slice: Option<&[u8]>) -> Option<ExifI
 
     // First, try to extract EXIF directly from the RAW file's TIFF structure
     match extract_tiff_exif_data(path) {
-        Some(exif_info) => {
-            return Some(exif_info);
-        },
+        Some(exif_info) => Some(exif_info),
         None => {
             // If that doesn't work, try to use the quickraw approach or manual
             if let Some(data) = data_slice {
@@ -710,7 +708,7 @@ fn parse_exif_datetime(s: &str) -> Option<DateTime<Local>> {
     let candidates = ["%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"];
     for fmt in candidates.iter() {
         if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
-            return Some(DateTime::from_naive_utc_and_offset(naive, Local::now().offset().clone()));
+            return Some(DateTime::from_naive_utc_and_offset(naive, *Local::now().offset()));
         }
     }
     None

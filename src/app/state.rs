@@ -1,6 +1,6 @@
 use eframe::egui;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::cache::{CompositionCache, ImageCache, MetadataCache};
@@ -102,7 +102,7 @@ impl ImageViewerApp {
         current_path_from(&self.image_files, self.current_index)
     }
 
-    pub(crate) fn clean_cache_for_moved_image(&mut self, moved_path: &PathBuf) {
+    pub(crate) fn clean_cache_for_moved_image(&mut self, moved_path: &Path) {
         let path_str = moved_path.to_string_lossy().to_string();
 
         // Remove from all caches

@@ -3,6 +3,7 @@ use std::fmt;
 
 /// Represents all possible errors in the image viewer application
 #[derive(Debug)]
+#[allow(clippy::enum_variant_names)]
 pub enum AppError {
     /// Error occurred while loading or processing an image
     ImageLoadError(String),
