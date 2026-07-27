@@ -1,11 +1,11 @@
-use chrono::{DateTime, Local};
-use std::path::Path;
-use serde::{Deserialize, Serialize};
-use std::io::BufReader;
 use crate::errors::AppError;
+use chrono::{DateTime, Local};
 use exif::Value;
-use std::fs::File;
 use memmap2::Mmap;
+use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io::BufReader;
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageMetadata {
@@ -53,29 +53,36 @@ pub struct ExifInfo {
 }
 
 pub fn extract_metadata(path: &Path) -> Result<ImageMetadata, AppError> {
-    let metadata = std::fs::metadata(path)
-        .map_err(|e| AppError::MetadataError(format!("Failed to get file metadata for {}: {}", path.display(), e)))?;
+    let metadata = std::fs::metadata(path).map_err(|e| {
+        AppError::MetadataError(format!(
+            "Failed to get file metadata for {}: {}",
+            path.display(),
+            e
+        ))
+    })?;
 
     // File info
     let file_info = FileInfo {
-        name: path.file_name()
+        name: path
+            .file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .to_string(),
         size: metadata.len(),
-        created: metadata.created().ok()
-            .and_then(|t| {
-                use std::time::SystemTime;
-                let duration = t.duration_since(SystemTime::UNIX_EPOCH).ok()?;
-                DateTime::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos()).map(|dt| dt.with_timezone(&Local))
-            }),
-        modified: metadata.modified().ok()
-            .and_then(|t| {
-                use std::time::SystemTime;
-                let duration = t.duration_since(SystemTime::UNIX_EPOCH).ok()?;
-                DateTime::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos()).map(|dt| dt.with_timezone(&Local))
-            }),
-        path: path.parent()
+        created: metadata.created().ok().and_then(|t| {
+            use std::time::SystemTime;
+            let duration = t.duration_since(SystemTime::UNIX_EPOCH).ok()?;
+            DateTime::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos())
+                .map(|dt| dt.with_timezone(&Local))
+        }),
+        modified: metadata.modified().ok().and_then(|t| {
+            use std::time::SystemTime;
+            let duration = t.duration_since(SystemTime::UNIX_EPOCH).ok()?;
+            DateTime::from_timestamp(duration.as_secs() as i64, duration.subsec_nanos())
+                .map(|dt| dt.with_timezone(&Local))
+        }),
+        path: path
+            .parent()
             .unwrap_or(Path::new(""))
             .to_string_lossy()
             .to_string(),
@@ -92,7 +99,7 @@ pub fn extract_metadata(path: &Path) -> Result<ImageMetadata, AppError> {
     } else {
         None
     };
-    
+
     let file_data_slice = mmap.as_deref();
 
     // Image basic info without full decode
@@ -106,14 +113,14 @@ pub fn extract_metadata(path: &Path) -> Result<ImageMetadata, AppError> {
             ext == "hif" || ext == "heic"
         }) {
             use libheif_rs::HeifContext;
-            
+
             // We need to ensure the data lives long enough for HeifContext
             let temp_data = if file_data_slice.is_none() {
-                 std::fs::read(path).ok()
+                std::fs::read(path).ok()
             } else {
-                 None
+                None
             };
-            
+
             let data_to_use = if let Some(d) = &temp_data {
                 d.as_slice()
             } else if let Some(d) = file_data_slice {
@@ -123,19 +130,19 @@ pub fn extract_metadata(path: &Path) -> Result<ImageMetadata, AppError> {
             };
 
             let ctx = if !data_to_use.is_empty() {
-                 HeifContext::read_from_bytes(data_to_use).ok()
+                HeifContext::read_from_bytes(data_to_use).ok()
             } else {
-                 None
+                None
             };
 
             if let Some(ctx) = ctx {
-                 if let Ok(handle) = ctx.primary_image_handle() {
-                     (handle.width(), handle.height())
-                 } else {
-                     (0, 0)
-                 }
+                if let Ok(handle) = ctx.primary_image_handle() {
+                    (handle.width(), handle.height())
+                } else {
+                    (0, 0)
+                }
             } else {
-                 (0, 0)
+                (0, 0)
             }
         }
         // For ARW and CR3 files
@@ -146,28 +153,28 @@ pub fn extract_metadata(path: &Path) -> Result<ImageMetadata, AppError> {
             if let Some(data) = file_data_slice {
                 // Try quickraw first
                 let jpg_data = match quickraw::Export::export_thumbnail_data(data) {
-                    Ok((d, orientation)) => {
-                        Some((d.to_vec(), orientation as u32))
-                    },
+                    Ok((d, orientation)) => Some((d.to_vec(), orientation as u32)),
                     Err(_) => {
                         // Fallback to manual extraction
                         extract_largest_jpeg(data).map(|d| (d, 1))
                     }
                 };
-                
+
                 if let Some((jpg_data, orientation)) = jpg_data {
-                    if let Ok(img) = image::load_from_memory_with_format(&jpg_data, image::ImageFormat::Jpeg) {
-                         let (mut w, mut h) = (img.width(), img.height());
-                          // Adjust for orientation
-                          if matches!(orientation, 5..=8) {
-                              std::mem::swap(&mut w, &mut h);
-                          }
-                         (w, h)
+                    if let Ok(img) =
+                        image::load_from_memory_with_format(&jpg_data, image::ImageFormat::Jpeg)
+                    {
+                        let (mut w, mut h) = (img.width(), img.height());
+                        // Adjust for orientation
+                        if matches!(orientation, 5..=8) {
+                            std::mem::swap(&mut w, &mut h);
+                        }
+                        (w, h)
                     } else {
                         (6000, 4000)
                     }
                 } else {
-                     (6000, 4000)
+                    (6000, 4000)
                 }
             } else {
                 // If mapping failed, try old method (slow) or just return fallback
@@ -185,8 +192,16 @@ pub fn extract_metadata(path: &Path) -> Result<ImageMetadata, AppError> {
 
     // Calculate aspect ratio
     let gcd_val = gcd(dimensions.0, dimensions.1);
-    let ratio_w = if gcd_val > 0 { dimensions.0 / gcd_val } else { 0 };
-    let ratio_h = if gcd_val > 0 { dimensions.1 / gcd_val } else { 0 };
+    let ratio_w = if gcd_val > 0 {
+        dimensions.0 / gcd_val
+    } else {
+        0
+    };
+    let ratio_h = if gcd_val > 0 {
+        dimensions.1 / gcd_val
+    } else {
+        0
+    };
     let aspect_ratio = format!("{}:{}", ratio_w, ratio_h);
 
     let image_info = ImageInfo {
@@ -214,7 +229,11 @@ fn guess_format_from_path(path: &Path) -> String {
 }
 
 fn gcd(a: u32, b: u32) -> u32 {
-    if b == 0 { a } else { gcd(b, a % b) }
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
 }
 
 pub fn format_file_size(size: u64) -> String {
@@ -254,11 +273,11 @@ fn extract_heif_exif_data(path: &Path, data_slice: Option<&[u8]>) -> Option<Exif
 
     // Use mapped data or read from file
     let temp_data = if data_slice.is_none() {
-         std::fs::read(path).ok()
+        std::fs::read(path).ok()
     } else {
-         None
+        None
     };
-    
+
     let data_to_use = if let Some(d) = &temp_data {
         d.as_slice()
     } else if let Some(d) = data_slice {
@@ -266,7 +285,7 @@ fn extract_heif_exif_data(path: &Path, data_slice: Option<&[u8]>) -> Option<Exif
     } else {
         return None;
     };
-    
+
     let ctx = HeifContext::read_from_bytes(data_to_use).ok()?;
 
     let handle = match ctx.primary_image_handle() {
@@ -302,28 +321,23 @@ fn extract_heif_exif_data(path: &Path, data_slice: Option<&[u8]>) -> Option<Exif
 
     // Try parsing EXIF data directly
     match exif_reader.read_from_container(&mut cursor) {
-        Ok(exif) => {
-            convert_kamadak_exif_to_exif_info(&exif)
-        },
+        Ok(exif) => convert_kamadak_exif_to_exif_info(&exif),
         Err(_) => {
             // If direct parsing fails, try parsing as a raw EXIF structure
             // Check if it starts with EXIF marker
-            let exif_data_without_header = if exif_bytes.len() > 6 && &exif_bytes[0..6] == b"Exif\0\0" {
-                &exif_bytes[6..]  // Skip "Exif" + 2 null bytes
-            } else {
-                exif_bytes
-            };
+            let exif_data_without_header =
+                if exif_bytes.len() > 6 && &exif_bytes[0..6] == b"Exif\0\0" {
+                    &exif_bytes[6..] // Skip "Exif" + 2 null bytes
+                } else {
+                    exif_bytes
+                };
 
             let mut cursor = std::io::Cursor::new(exif_data_without_header);
             match exif_reader.read_from_container(&mut cursor) {
-                Ok(exif) => {
-                    convert_kamadak_exif_to_exif_info(&exif)
-                },
-                Err(_) => {
-                    None
-                },
+                Ok(exif) => convert_kamadak_exif_to_exif_info(&exif),
+                Err(_) => None,
             }
-        },
+        }
     }
 }
 
@@ -345,13 +359,15 @@ fn extract_raw_exif_data(path: &Path, data_slice: Option<&[u8]>) -> Option<ExifI
                             Ok(exif) => convert_kamadak_exif_to_exif_info(&exif),
                             Err(_) => None,
                         }
-                    },
+                    }
                     Err(_) => {
                         // Fallback
                         if let Some(jpg_data) = extract_largest_jpeg(data) {
                             let file = std::io::Cursor::new(jpg_data);
                             let exif_reader = exif::Reader::new();
-                            match exif_reader.read_from_container(&mut std::io::BufReader::new(file)) {
+                            match exif_reader
+                                .read_from_container(&mut std::io::BufReader::new(file))
+                            {
                                 Ok(exif) => convert_kamadak_exif_to_exif_info(&exif),
                                 Err(_) => None,
                             }
@@ -366,8 +382,8 @@ fn extract_raw_exif_data(path: &Path, data_slice: Option<&[u8]>) -> Option<ExifI
                     Ok(data) => data,
                     Err(_) => return None,
                 };
-                
-                 match quickraw::Export::export_thumbnail_data(&data) {
+
+                match quickraw::Export::export_thumbnail_data(&data) {
                     Ok((jpg_data, _orientation)) => {
                         let file = std::io::Cursor::new(jpg_data);
                         let exif_reader = exif::Reader::new();
@@ -375,12 +391,14 @@ fn extract_raw_exif_data(path: &Path, data_slice: Option<&[u8]>) -> Option<ExifI
                             Ok(exif) => convert_kamadak_exif_to_exif_info(&exif),
                             Err(_) => None,
                         }
-                    },
+                    }
                     Err(_) => {
                         if let Some(jpg_data) = extract_largest_jpeg(&data) {
                             let file = std::io::Cursor::new(jpg_data);
                             let exif_reader = exif::Reader::new();
-                            match exif_reader.read_from_container(&mut std::io::BufReader::new(file)) {
+                            match exif_reader
+                                .read_from_container(&mut std::io::BufReader::new(file))
+                            {
                                 Ok(exif) => convert_kamadak_exif_to_exif_info(&exif),
                                 Err(_) => None,
                             }
@@ -397,16 +415,16 @@ fn extract_raw_exif_data(path: &Path, data_slice: Option<&[u8]>) -> Option<ExifI
 fn extract_largest_jpeg(data: &[u8]) -> Option<Vec<u8>> {
     let mut best_jpeg = None;
     let mut max_size = 0;
-    
+
     let mut i = 0;
-    
+
     while i < data.len().saturating_sub(2) {
-        if data[i] == 0xFF && data[i+1] == 0xD8 {
+        if data[i] == 0xFF && data[i + 1] == 0xD8 {
             let start = i;
             let mut end = 0;
             let mut j = start + 2;
             while j < data.len().saturating_sub(1) {
-                if data[j] == 0xFF && data[j+1] == 0xD9 {
+                if data[j] == 0xFF && data[j + 1] == 0xD9 {
                     end = j + 2;
                     let size = end - start;
                     if size > max_size {
@@ -425,10 +443,9 @@ fn extract_largest_jpeg(data: &[u8]) -> Option<Vec<u8>> {
             i += 1;
         }
     }
-    
+
     best_jpeg.map(|(start, end)| data[start..end].to_vec())
 }
-
 
 fn extract_tiff_exif_data(path: &Path) -> Option<ExifInfo> {
     // ARW files are based on TIFF format, so we can try to read EXIF from the TIFF structure
@@ -441,12 +458,8 @@ fn extract_tiff_exif_data(path: &Path) -> Option<ExifInfo> {
 
     let exif_reader = exif::Reader::new();
     match exif_reader.read_from_container(&mut buf_reader) {
-        Ok(exif) => {
-            convert_kamadak_exif_to_exif_info(&exif)
-        },
-        Err(_) => {
-            None
-        },
+        Ok(exif) => convert_kamadak_exif_to_exif_info(&exif),
+        Err(_) => None,
     }
 }
 
@@ -569,7 +582,7 @@ fn convert_kamadak_exif_to_exif_info(exif: &exif::Exif) -> Option<ExifInfo> {
 }
 
 fn extract_exif_data_from_file(path: &Path) -> Option<ExifInfo> {
-    use exif::{Reader, Tag, In, Value};
+    use exif::{In, Reader, Tag, Value};
 
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
@@ -662,7 +675,8 @@ fn extract_exif_data_from_file(path: &Path) -> Option<ExifInfo> {
 
             // Extract ExposureBiasValue
             if let Some(field) = exif.get_field(Tag::ExposureBiasValue, In::PRIMARY) {
-                exif_info.exposure_bias_value = Some(field.display_value().with_unit(&exif).to_string());
+                exif_info.exposure_bias_value =
+                    Some(field.display_value().with_unit(&exif).to_string());
             }
 
             // Extract ApertureValue
@@ -708,7 +722,10 @@ fn parse_exif_datetime(s: &str) -> Option<DateTime<Local>> {
     let candidates = ["%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"];
     for fmt in candidates.iter() {
         if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
-            return Some(DateTime::from_naive_utc_and_offset(naive, *Local::now().offset()));
+            return Some(DateTime::from_naive_utc_and_offset(
+                naive,
+                *Local::now().offset(),
+            ));
         }
     }
     None
@@ -749,90 +766,80 @@ fn format_flash_value(value: &Value) -> String {
 
 fn format_color_space(value: &Value) -> String {
     match value {
-        Value::Short(values) if !values.is_empty() => {
-            match values[0] {
-                1 => "sRGB".to_string(),
-                65535 => "uncalibrated".to_string(),
-                _ => format!("unknown ({})", values[0]),
-            }
-        }
+        Value::Short(values) if !values.is_empty() => match values[0] {
+            1 => "sRGB".to_string(),
+            65535 => "uncalibrated".to_string(),
+            _ => format!("unknown ({})", values[0]),
+        },
         _ => "unknown".to_string(),
     }
 }
 
 fn format_metering_mode(value: &Value) -> String {
     match value {
-        Value::Short(values) if !values.is_empty() => {
-            match values[0] {
-                0 => "unknown".to_string(),
-                1 => "average".to_string(),
-                2 => "center-weighted average".to_string(),
-                3 => "spot".to_string(),
-                4 => "multi-spot".to_string(),
-                5 => "pattern".to_string(),
-                6 => "partial".to_string(),
-                255 => "other".to_string(),
-                _ => format!("unknown ({})", values[0]),
-            }
-        }
+        Value::Short(values) if !values.is_empty() => match values[0] {
+            0 => "unknown".to_string(),
+            1 => "average".to_string(),
+            2 => "center-weighted average".to_string(),
+            3 => "spot".to_string(),
+            4 => "multi-spot".to_string(),
+            5 => "pattern".to_string(),
+            6 => "partial".to_string(),
+            255 => "other".to_string(),
+            _ => format!("unknown ({})", values[0]),
+        },
         _ => "unknown".to_string(),
     }
 }
 
 fn format_sensitivity_type(value: &Value) -> String {
     match value {
-        Value::Short(values) if !values.is_empty() => {
-            match values[0] {
-                0 => "unknown".to_string(),
-                1 => "SOS".to_string(),
-                2 => "REI".to_string(),
-                3 => "ISO".to_string(),
-                4 => "SOS and REI".to_string(),
-                5 => "SOS and ISO".to_string(),
-                6 => "REI and ISO".to_string(),
-                7 => "SOS and REI and ISO".to_string(),
-                _ => format!("unknown ({})", values[0]),
-            }
-        }
+        Value::Short(values) if !values.is_empty() => match values[0] {
+            0 => "unknown".to_string(),
+            1 => "SOS".to_string(),
+            2 => "REI".to_string(),
+            3 => "ISO".to_string(),
+            4 => "SOS and REI".to_string(),
+            5 => "SOS and ISO".to_string(),
+            6 => "REI and ISO".to_string(),
+            7 => "SOS and REI and ISO".to_string(),
+            _ => format!("unknown ({})", values[0]),
+        },
         _ => "unknown".to_string(),
     }
 }
 
 fn format_exposure_program(value: &Value) -> String {
     match value {
-        Value::Short(values) if !values.is_empty() => {
-            match values[0] {
-                0 => "not defined".to_string(),
-                1 => "manual".to_string(),
-                2 => "normal program".to_string(),
-                3 => "aperture priority".to_string(),
-                4 => "shutter priority".to_string(),
-                5 => "creative program (biased toward depth of field)".to_string(),
-                6 => "action program (biased toward fast shutter speed)".to_string(),
-                7 => "portrait mode (for closeup photos with the background out of focus)".to_string(),
-                8 => "landscape mode (for landscape photos with the background in focus)".to_string(),
-                _ => format!("unknown ({})", values[0]),
-            }
-        }
+        Value::Short(values) if !values.is_empty() => match values[0] {
+            0 => "not defined".to_string(),
+            1 => "manual".to_string(),
+            2 => "normal program".to_string(),
+            3 => "aperture priority".to_string(),
+            4 => "shutter priority".to_string(),
+            5 => "creative program (biased toward depth of field)".to_string(),
+            6 => "action program (biased toward fast shutter speed)".to_string(),
+            7 => "portrait mode (for closeup photos with the background out of focus)".to_string(),
+            8 => "landscape mode (for landscape photos with the background in focus)".to_string(),
+            _ => format!("unknown ({})", values[0]),
+        },
         _ => "unknown".to_string(),
     }
 }
 
 fn format_orientation(value: &Value) -> String {
     match value {
-        Value::Short(values) if !values.is_empty() => {
-            match values[0] {
-                1 => "row 0 at top and column 0 at left".to_string(),
-                2 => "row 0 at top and column 0 at right".to_string(),
-                3 => "row 0 at bottom and column 0 at right".to_string(),
-                4 => "row 0 at bottom and column 0 at left".to_string(),
-                5 => "row 0 at left and column 0 at top".to_string(),
-                6 => "row 0 at right and column 0 at top".to_string(),
-                7 => "row 0 at right and column 0 at bottom".to_string(),
-                8 => "row 0 at left and column 0 at bottom".to_string(),
-                _ => format!("unknown ({})", values[0]),
-            }
-        }
+        Value::Short(values) if !values.is_empty() => match values[0] {
+            1 => "row 0 at top and column 0 at left".to_string(),
+            2 => "row 0 at top and column 0 at right".to_string(),
+            3 => "row 0 at bottom and column 0 at right".to_string(),
+            4 => "row 0 at bottom and column 0 at left".to_string(),
+            5 => "row 0 at left and column 0 at top".to_string(),
+            6 => "row 0 at right and column 0 at top".to_string(),
+            7 => "row 0 at right and column 0 at bottom".to_string(),
+            8 => "row 0 at left and column 0 at bottom".to_string(),
+            _ => format!("unknown ({})", values[0]),
+        },
         _ => "unknown".to_string(),
     }
 }

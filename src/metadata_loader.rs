@@ -34,7 +34,8 @@ impl MetadataLoader {
 
                 if let Ok(metadata) = extract_metadata(&path) {
                     if request_id == latest_request_id.load(Ordering::Acquire) {
-                        event_bus.publish(ViewerEvent::MetadataReady(path.clone(), Box::new(metadata)));
+                        event_bus
+                            .publish(ViewerEvent::MetadataReady(path.clone(), Box::new(metadata)));
                     }
                 }
             }

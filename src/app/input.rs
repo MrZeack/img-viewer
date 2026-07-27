@@ -32,6 +32,16 @@ impl ImageViewerApp {
             }
         } else if ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.should_close = true;
+        } else if ctx.input(|i| i.key_pressed(Key::R)) {
+            self.rotation_manually_set = true;
+            let shift = ctx.input(|i| i.modifiers.shift);
+            if shift {
+                self.rotation = (self.rotation - 1).rem_euclid(4);
+                self.set_status_message("Rotated counter-clockwise", 1.5);
+            } else {
+                self.rotation = (self.rotation + 1).rem_euclid(4);
+                self.set_status_message("Rotated clockwise", 1.5);
+            }
         }
 
         // Handle number keys for bookmarks
@@ -215,6 +225,8 @@ impl ImageViewerApp {
                 self.image_position = bookmark.position;
                 self.show_composition = bookmark.composition;
                 self.composition_type = bookmark.composition_type;
+                self.rotation = bookmark.rotation;
+                self.rotation_manually_set = true;
 
                 self.load_current_image_with_reset(ctx, false);
 
@@ -232,6 +244,7 @@ impl ImageViewerApp {
                 position: self.image_position,
                 composition: self.show_composition,
                 composition_type: self.composition_type,
+                rotation: self.rotation,
             };
             self.bookmarks.insert(num, bookmark);
 
@@ -388,6 +401,8 @@ mod tests {
             should_close: false,
             sort_newest_first: true,
             max_cached_dimension: 1024,
+            rotation: 0,
+            rotation_manually_set: false,
         };
 
         let insert_pos = apply_undo_state(&mut app, PathBuf::from("/tmp/b.jpg"), 1);

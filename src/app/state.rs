@@ -80,6 +80,12 @@ pub struct ImageViewerApp {
 
     /// Maximum cached dimension for performance
     pub(crate) max_cached_dimension: u32,
+
+    /// Rotation of the current image in 90-degree steps (0, 1, 2, 3)
+    pub(crate) rotation: i32,
+
+    /// Whether rotation was manually set by user (prevents EXIF metadata overwrite)
+    pub(crate) rotation_manually_set: bool,
 }
 
 /// Represents the state of a bookmarked image position
@@ -95,6 +101,8 @@ pub(crate) struct BookmarkState {
     pub(crate) composition: bool,
     /// The type of composition guide that was active
     pub(crate) composition_type: CompositionType,
+    /// Rotation at the time of bookmarking
+    pub(crate) rotation: i32,
 }
 
 impl ImageViewerApp {

@@ -82,6 +82,10 @@ impl eframe::App for ImageViewerApp {
                         self.zoom_factor
                     );
 
+                    if self.rotation != 0 {
+                        status_text.push_str(&format!(" - Rotación: {}°", self.rotation * 90));
+                    }
+
                     if self.show_composition {
                         status_text.push_str(&format!(" - Composición: {}", self.composition_type.name()));
                     }
@@ -99,7 +103,7 @@ impl eframe::App for ImageViewerApp {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label("LEFT/RIGHT: Navigate | Wheel: Zoom | L: Like | W: Worse | D: Delete | U: Undo | C: Composition | UP/DOWN: Change | 1-9: Bookmarks | 0: Clear");
+                    ui.label("LEFT/RIGHT: Navigate | Wheel: Zoom | L: Like | W: Worse | D: Delete | U: Undo | C: Composition | UP/DOWN: Change | R/Shift+R: Rotate | 1-9: Bookmarks | 0: Clear");
                 });
             });
         });
@@ -295,14 +299,21 @@ impl eframe::App for ImageViewerApp {
                 let image_size = texture.size_vec2();
                 let available_size = ui.available_size();
 
+                // Swap dimensions for display sizing calculation if rotated 90 or 270 degrees
+                let visual_image_size = if self.rotation % 2 != 0 {
+                    egui::vec2(image_size.y, image_size.x)
+                } else {
+                    image_size
+                };
+
                 // Calculate fit-to-window scale
-                let scale_x = available_size.x / image_size.x;
-                let scale_y = available_size.y / image_size.y;
+                let scale_x = available_size.x / visual_image_size.x;
+                let scale_y = available_size.y / visual_image_size.y;
                 let fit_scale = scale_x.min(scale_y);
 
                 // Apply zoom
                 let display_scale = fit_scale * self.zoom_factor;
-                let display_size = image_size * display_scale;
+                let display_size = visual_image_size * display_scale;
 
                 // Center image if smaller than available area
                 let mut image_pos = self.image_position;
@@ -322,26 +333,110 @@ impl eframe::App for ImageViewerApp {
                     egui::Sense::click_and_drag(),
                 );
 
-                ui.painter().image(
-                    texture.id(),
-                    image_rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
+                // Map UV coordinates based on 90-degree step rotations
+                let (uv_tl, uv_tr, uv_br, uv_bl) = match self.rotation {
+                    1 => (
+                        egui::pos2(0.0, 1.0),
+                        egui::pos2(0.0, 0.0),
+                        egui::pos2(1.0, 0.0),
+                        egui::pos2(1.0, 1.0),
+                    ),
+                    2 => (
+                        egui::pos2(1.0, 1.0),
+                        egui::pos2(0.0, 1.0),
+                        egui::pos2(0.0, 0.0),
+                        egui::pos2(1.0, 0.0),
+                    ),
+                    3 => (
+                        egui::pos2(1.0, 0.0),
+                        egui::pos2(1.0, 1.0),
+                        egui::pos2(0.0, 1.0),
+                        egui::pos2(0.0, 0.0),
+                    ),
+                    _ => (
+                        egui::pos2(0.0, 0.0),
+                        egui::pos2(1.0, 0.0),
+                        egui::pos2(1.0, 1.0),
+                        egui::pos2(0.0, 1.0),
+                    ),
+                };
+
+                let mut mesh = egui::Mesh::with_texture(texture.id());
+                mesh.vertices.push(egui::epaint::Vertex {
+                    pos: image_rect.left_top(),
+                    uv: uv_tl,
+                    color: egui::Color32::WHITE,
+                });
+                mesh.vertices.push(egui::epaint::Vertex {
+                    pos: image_rect.right_top(),
+                    uv: uv_tr,
+                    color: egui::Color32::WHITE,
+                });
+                mesh.vertices.push(egui::epaint::Vertex {
+                    pos: image_rect.right_bottom(),
+                    uv: uv_br,
+                    color: egui::Color32::WHITE,
+                });
+                mesh.vertices.push(egui::epaint::Vertex {
+                    pos: image_rect.left_bottom(),
+                    uv: uv_bl,
+                    color: egui::Color32::WHITE,
+                });
+
+                mesh.indices.push(0);
+                mesh.indices.push(1);
+                mesh.indices.push(2);
+                mesh.indices.push(0);
+                mesh.indices.push(2);
+                mesh.indices.push(3);
+
+                ui.painter().add(egui::Shape::mesh(mesh));
 
                 // Draw composition lines
                 if self.show_composition {
-                    // Cache by type + size only; lines are generated in local space (0,0..display_size)
+                    let unrotated_display_size = image_size * display_scale;
+                    // Cache by type + size + rotation
                     let cache_key = format!(
-                        "{:?}_{:.0}x{:.0}",
-                        self.composition_type, display_size.x, display_size.y
+                        "{:?}_{:.0}x{:.0}_r{}",
+                        self.composition_type,
+                        unrotated_display_size.x,
+                        unrotated_display_size.y,
+                        self.rotation
                     );
 
-                    let local_rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), display_size);
                     let lines = if let Some(cached_lines) = self.composition_cache.get(&cache_key) {
                         cached_lines
                     } else {
-                        let lines = generate_composition_lines(self.composition_type, local_rect);
+                        let local_rect =
+                            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), unrotated_display_size);
+                        let mut lines =
+                            generate_composition_lines(self.composition_type, local_rect);
+
+                        // Rotate lines based on self.rotation (0: 0, 1: 90, 2: 180, 3: 270)
+                        let w = unrotated_display_size.x;
+                        let h = unrotated_display_size.y;
+
+                        for line in &mut lines {
+                            for pt in &mut [&mut line.start, &mut line.end] {
+                                let (x, y) = (pt.x, pt.y);
+                                match self.rotation {
+                                    1 => {
+                                        pt.x = h - y;
+                                        pt.y = x;
+                                    }
+                                    2 => {
+                                        pt.x = w - x;
+                                        pt.y = h - y;
+                                    }
+                                    3 => {
+                                        pt.x = y;
+                                        pt.y = w - x;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+
                         self.composition_cache.put(cache_key, lines.clone());
                         lines
                     };

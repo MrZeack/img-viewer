@@ -4,12 +4,12 @@ use eframe::egui;
 mod app;
 mod cache;
 mod composition;
+mod config;
 mod errors;
+mod event;
 mod image_loader;
 mod metadata_loader;
 mod metadata_simple;
-mod event;
-mod config;
 
 use app::ImageViewerApp;
 

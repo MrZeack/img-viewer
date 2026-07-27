@@ -37,7 +37,6 @@ impl ImageViewerApp {
             image_loader.pending_requests(),
         );
 
-
         let mut app = Self {
             current_dir,
             image_files,
@@ -69,6 +68,8 @@ impl ImageViewerApp {
             should_close: false,
             sort_newest_first: config.browsing.sort_newest_first,
             max_cached_dimension: config.performance.max_cached_dimension,
+            rotation: 0,
+            rotation_manually_set: false,
         };
 
         if !app.image_files.is_empty() {
@@ -127,6 +128,32 @@ impl ImageViewerApp {
         if reset_view {
             self.zoom_factor = 1.0;
             self.image_position = egui::Vec2::ZERO;
+            self.rotation = 0;
+            self.rotation_manually_set = false;
+        }
+
+        // Check metadata cache for auto-rotation
+        if let Some(cached_metadata) = self.metadata_cache.get(&path_str) {
+            self.current_metadata = Some(cached_metadata.clone());
+            if !self.rotation_manually_set {
+                if let Some(exif) = &cached_metadata.exif_info {
+                    if let Some(orientation) = &exif.orientation {
+                        self.rotation = match orientation.as_str() {
+                            "row 0 at top and column 0 at left" => 0,
+                            "row 0 at bottom and column 0 at right" => 2,
+                            "row 0 at right and column 0 at top" => 1,
+                            "row 0 at left and column 0 at bottom" => 3,
+                            "row 0 at top and column 0 at right" => 0,
+                            "row 0 at bottom and column 0 at left" => 2,
+                            "row 0 at left and column 0 at top" => 3,
+                            "row 0 at right and column 0 at bottom" => 1,
+                            _ => 0,
+                        };
+                    }
+                }
+            }
+        } else {
+            self.current_metadata = None;
         }
 
         // Request metadata extraction
@@ -157,6 +184,23 @@ impl ImageViewerApp {
                     let metadata = *metadata;
                     if should_apply_event(self.current_path(), &path) {
                         self.current_metadata = Some(metadata.clone());
+                        if !self.rotation_manually_set {
+                            if let Some(exif) = &metadata.exif_info {
+                                if let Some(orientation) = &exif.orientation {
+                                    self.rotation = match orientation.as_str() {
+                                        "row 0 at top and column 0 at left" => 0,
+                                        "row 0 at bottom and column 0 at right" => 2,
+                                        "row 0 at right and column 0 at top" => 1,
+                                        "row 0 at left and column 0 at bottom" => 3,
+                                        "row 0 at top and column 0 at right" => 0,
+                                        "row 0 at bottom and column 0 at left" => 2,
+                                        "row 0 at left and column 0 at top" => 3,
+                                        "row 0 at right and column 0 at bottom" => 1,
+                                        _ => 0,
+                                    };
+                                }
+                            }
+                        }
                     }
                     let path_str = path.to_string_lossy().to_string();
                     self.metadata_cache.put(path_str, metadata);

@@ -81,11 +81,17 @@ pub fn load_config() -> Config {
             Ok(content) => match toml::from_str(&content) {
                 Ok(config) => return config,
                 Err(err) => {
-                    eprintln!("Failed to parse config.toml at {:?}: {}, using default config", path, err);
+                    eprintln!(
+                        "Failed to parse config.toml at {:?}: {}, using default config",
+                        path, err
+                    );
                 }
             },
             Err(_) => {
-                println!("config.toml not found at {:?}, creating a default one.", path);
+                println!(
+                    "config.toml not found at {:?}, creating a default one.",
+                    path
+                );
             }
         }
     }
