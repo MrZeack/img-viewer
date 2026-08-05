@@ -7,6 +7,7 @@ mod composition;
 mod config;
 mod errors;
 mod event;
+mod focus;
 mod image_loader;
 mod metadata_loader;
 mod metadata_simple;

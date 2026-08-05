@@ -86,6 +86,24 @@ pub struct ImageViewerApp {
 
     /// Whether rotation was manually set by user (prevents EXIF metadata overwrite)
     pub(crate) rotation_manually_set: bool,
+
+    /// Whether to show focus peaking overlay
+    pub(crate) show_focus_peaking: bool,
+
+    /// Quality multiplier for on-demand high resolution rendering (1: Normal, 2: 3x, 3: Original/Max)
+    pub(crate) quality_multiplier: u8,
+
+    /// Application configuration
+    pub(crate) config: crate::config::Config,
+}
+
+impl ImageViewerApp {
+    pub(crate) fn save_view_config(&mut self) {
+        self.config.view.show_composition = self.show_composition;
+        self.config.view.composition_type = format!("{:?}", self.composition_type);
+        self.config.view.show_focus_peaking = self.show_focus_peaking;
+        crate::config::save_config(&self.config);
+    }
 }
 
 /// Represents the state of a bookmarked image position

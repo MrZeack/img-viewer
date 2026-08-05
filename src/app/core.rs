@@ -55,8 +55,8 @@ impl ImageViewerApp {
                 (config.performance.loader_threads / 2).max(1),
                 event_bus.clone(),
             ),
-            show_composition: false,
-            composition_type: crate::composition::CompositionType::RuleOfThirds,
+            show_composition: config.view.show_composition,
+            composition_type: parse_composition_type(&config.view.composition_type),
             show_sidebar: true,
             sidebar_width: 320.0,
             status_message: None,
@@ -70,6 +70,9 @@ impl ImageViewerApp {
             max_cached_dimension: config.performance.max_cached_dimension,
             rotation: 0,
             rotation_manually_set: false,
+            show_focus_peaking: config.view.show_focus_peaking,
+            quality_multiplier: 1,
+            config,
         };
 
         if !app.image_files.is_empty() {
@@ -91,31 +94,46 @@ impl ImageViewerApp {
         };
         let path_str = current_path.to_string_lossy().to_string();
 
-        // Check cache first
-        if let Some(cached_image_arc) = self.image_cache.get(&path_str) {
-            self.current_image = Some(ctx.load_texture(
-                &path_str,
-                cached_image_arc.clone(),
-                egui::TextureOptions::default(),
-            ));
-        } else {
-            // Request image load
-            let ext = current_path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_lowercase();
+        // Calculate target dimensions based on quality multiplier
+        let target_dim = match self.quality_multiplier {
+            2 => {
+                let d = (self.max_cached_dimension * 3).min(6144);
+                Some((d, d))
+            }
+            3 => None, // Full original native resolution
+            _ => {
+                let ext = current_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                let d = if matches!(ext.as_str(), "arw" | "cr3") {
+                    self.max_cached_dimension.max(4096)
+                } else {
+                    self.max_cached_dimension
+                };
+                Some((d, d))
+            }
+        };
 
-            // For RAW files, we allow a larger preview to avoid pixelation
-            // 4096 is a good balance between quality and memory for modern RAW previews
-            let d = if matches!(ext.as_str(), "arw" | "cr3") {
-                self.max_cached_dimension.max(4096)
+        // Check cache only for standard quality level 1
+        if self.quality_multiplier == 1 {
+            if let Some(cached_image_arc) = self.image_cache.get(&path_str) {
+                self.current_image = Some(ctx.load_texture(
+                    &path_str,
+                    cached_image_arc.clone(),
+                    egui::TextureOptions::default(),
+                ));
             } else {
-                self.max_cached_dimension
-            };
-
+                self.image_loader
+                    .load_image(&current_path, target_dim, true);
+                self.loading_requests
+                    .insert(current_path.clone(), Instant::now());
+            }
+        } else {
+            // For HQ levels (2 or 3), directly trigger fresh load for high resolution
             self.image_loader
-                .load_image(&current_path, Some((d, d)), true);
+                .load_image(&current_path, target_dim, true);
             self.loading_requests
                 .insert(current_path.clone(), Instant::now());
         }
@@ -222,6 +240,25 @@ pub(crate) fn should_apply_event(
     event_path: &std::path::PathBuf,
 ) -> bool {
     current_path.is_some_and(|path| path == event_path)
+}
+
+fn parse_composition_type(name: &str) -> crate::composition::CompositionType {
+    use crate::composition::CompositionType;
+    match name {
+        "GoldenRatio" => CompositionType::GoldenRatio,
+        "GoldenSpiral" => CompositionType::GoldenSpiral,
+        "CenterLines" => CompositionType::CenterLines,
+        "Diagonal" => CompositionType::Diagonal,
+        "Triangle" => CompositionType::Triangle,
+        "PhiGrid" => CompositionType::PhiGrid,
+        "DynamicSymmetry" => CompositionType::DynamicSymmetry,
+        "ArmatureOfRectangle" => CompositionType::ArmatureOfRectangle,
+        "Rabatment" => CompositionType::Rabatment,
+        "HarmoniousTriangles" => CompositionType::HarmoniousTriangles,
+        "SinisterDiagonal" => CompositionType::SinisterDiagonal,
+        "AspectRatioGuides" => CompositionType::AspectRatioGuides,
+        _ => CompositionType::RuleOfThirds,
+    }
 }
 
 #[cfg(test)]

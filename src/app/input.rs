@@ -19,16 +19,36 @@ impl ImageViewerApp {
         } else if ctx.input(|i| i.key_pressed(Key::U)) {
             self.undo_last_move(ctx);
         } else if ctx.input(|i| i.key_pressed(Key::C)) {
-            self.toggle_composition_lines();
+            let shift = ctx.input(|i| i.modifiers.shift);
+            if shift {
+                self.show_composition = false;
+                self.set_status_message("Composición desactivada", 2.0);
+            } else if !self.show_composition {
+                self.show_composition = true;
+                self.set_status_message(
+                    &format!("Composición: {}", self.composition_type.name()),
+                    2.0,
+                );
+            } else {
+                self.composition_type = self.composition_type.next();
+                self.composition_cache.clear();
+                self.set_status_message(
+                    &format!("Composición: {}", self.composition_type.name()),
+                    2.0,
+                );
+            }
+            self.save_view_config();
         } else if ctx.input(|i| i.key_pressed(Key::ArrowUp)) {
             if self.show_composition {
                 self.composition_type = self.composition_type.next();
                 self.composition_cache.clear();
+                self.save_view_config();
             }
         } else if ctx.input(|i| i.key_pressed(Key::ArrowDown)) {
             if self.show_composition {
                 self.composition_type = self.composition_type.prev();
                 self.composition_cache.clear();
+                self.save_view_config();
             }
         } else if ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.should_close = true;
@@ -42,6 +62,28 @@ impl ImageViewerApp {
                 self.rotation = (self.rotation + 1).rem_euclid(4);
                 self.set_status_message("Rotated clockwise", 1.5);
             }
+        } else if ctx.input(|i| i.key_pressed(Key::F)) {
+            self.show_focus_peaking = !self.show_focus_peaking;
+            if self.show_focus_peaking {
+                self.set_status_message("Focus Peaking: ON", 2.0);
+            } else {
+                self.set_status_message("Focus Peaking: OFF", 2.0);
+            }
+            self.save_view_config();
+        } else if ctx.input(|i| i.key_pressed(Key::H)) {
+            self.quality_multiplier = if self.quality_multiplier >= 3 {
+                1
+            } else {
+                self.quality_multiplier + 1
+            };
+            let msg = match self.quality_multiplier {
+                1 => "Calidad: Normal",
+                2 => "Calidad: Alta (3x)",
+                3 => "Calidad: Original (Máxima)",
+                _ => "Calidad: Normal",
+            };
+            self.set_status_message(msg, 2.5);
+            self.load_current_image_with_reset(ctx, false);
         }
 
         // Handle number keys for bookmarks
@@ -60,6 +102,7 @@ impl ImageViewerApp {
 
     fn previous_image(&mut self, ctx: &Context) {
         if !self.image_files.is_empty() {
+            self.quality_multiplier = 1;
             self.current_index =
                 (self.current_index + self.image_files.len() - 1) % self.image_files.len();
             self.load_current_image(ctx);
@@ -68,6 +111,7 @@ impl ImageViewerApp {
 
     fn next_image(&mut self, ctx: &Context) {
         if !self.image_files.is_empty() {
+            self.quality_multiplier = 1;
             self.current_index = (self.current_index + 1) % self.image_files.len();
             self.load_current_image(ctx);
         }
@@ -210,10 +254,6 @@ impl ImageViewerApp {
         } else {
             self.set_status_message("No image to undo", 3.0);
         }
-    }
-
-    fn toggle_composition_lines(&mut self) {
-        self.show_composition = !self.show_composition;
     }
 
     fn handle_bookmark(&mut self, num: usize, ctx: &Context) {
@@ -403,6 +443,9 @@ mod tests {
             max_cached_dimension: 1024,
             rotation: 0,
             rotation_manually_set: false,
+            show_focus_peaking: false,
+            quality_multiplier: 1,
+            config: crate::config::Config::default(),
         };
 
         let insert_pos = apply_undo_state(&mut app, PathBuf::from("/tmp/b.jpg"), 1);

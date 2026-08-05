@@ -1,5 +1,6 @@
 use super::state::ImageViewerApp;
 use crate::composition::generate_composition_lines;
+use crate::focus::apply_focus_peaking;
 use crate::image_loader::get_image_files;
 use crate::metadata_simple::format_file_size;
 use eframe::egui::{self, CentralPanel, Context, SidePanel, TopBottomPanel};
@@ -90,6 +91,16 @@ impl eframe::App for ImageViewerApp {
                         status_text.push_str(&format!(" - Composición: {}", self.composition_type.name()));
                     }
 
+                    if self.show_focus_peaking {
+                        status_text.push_str(" - Focus: ON");
+                    }
+
+                    if self.quality_multiplier == 2 {
+                        status_text.push_str(" - Calidad: 3x");
+                    } else if self.quality_multiplier == 3 {
+                        status_text.push_str(" - Calidad: MAX");
+                    }
+
                     if !self.bookmarks.is_empty() {
                         let bookmarks: Vec<_> = self.bookmarks.keys().collect();
                         status_text.push_str(&format!(" - Bookmarks: {:?}", bookmarks));
@@ -103,7 +114,7 @@ impl eframe::App for ImageViewerApp {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label("LEFT/RIGHT: Navigate | Wheel: Zoom | L: Like | W: Worse | D: Delete | U: Undo | C: Composition | UP/DOWN: Change | R/Shift+R: Rotate | 1-9: Bookmarks | 0: Clear");
+                    ui.label("LEFT/RIGHT: Navigate | Wheel: Zoom | L: Like | W: Worse | D: Delete | U: Undo | C: Composición | Shift+C: Off | F: Focus | H: Calidad | UP/DOWN: Tipo | R/Shift+R: Rotate | 1-9: Bookmarks | 0: Clear");
                 });
             });
         });
@@ -295,7 +306,31 @@ impl eframe::App for ImageViewerApp {
 
         // Main image display
         CentralPanel::default().show(ctx, |ui| {
-            if let Some(texture) = &self.current_image {
+            let focus_texture_storage;
+            let current_path_str = self.current_path().map(|p| p.to_string_lossy().to_string());
+
+            let active_texture = if self.show_focus_peaking {
+                if let Some(path_str) = &current_path_str {
+                    if let Some(color_img) = self.image_cache.get(path_str) {
+                        let threshold = 30.0;
+                        let peaked_img = apply_focus_peaking(&color_img, threshold);
+                        focus_texture_storage = ctx.load_texture(
+                            format!("{}_focus", path_str),
+                            peaked_img,
+                            egui::TextureOptions::default(),
+                        );
+                        Some(&focus_texture_storage)
+                    } else {
+                        self.current_image.as_ref()
+                    }
+                } else {
+                    self.current_image.as_ref()
+                }
+            } else {
+                self.current_image.as_ref()
+            };
+
+            if let Some(texture) = active_texture {
                 let image_size = texture.size_vec2();
                 let available_size = ui.available_size();
 
