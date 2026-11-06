@@ -38,7 +38,7 @@ build.bat --native --install
 | `make bump` | Bump version, update `CHANGELOG.md`, create commit and tag (no push). `TYPE=patch\|minor\|major` or `VERSION=X.Y.Z`; without them the type is inferred from Conventional Commits |
 | `cargo run --release` | Run from source |
 
-Release: `make bump`, then `git push origin main && git push origin vX.Y.Z`; pushing the tag runs the release workflow.
+Release: `make bump`, then `git push origin main && git push origin vX.Y.Z`. No binaries are published; install from source with `make install`.
 
 ## 🎯 Usage
 
