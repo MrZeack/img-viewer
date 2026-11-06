@@ -192,16 +192,8 @@ pub fn extract_metadata(path: &Path) -> Result<ImageMetadata, AppError> {
 
     // Calculate aspect ratio
     let gcd_val = gcd(dimensions.0, dimensions.1);
-    let ratio_w = if gcd_val > 0 {
-        dimensions.0 / gcd_val
-    } else {
-        0
-    };
-    let ratio_h = if gcd_val > 0 {
-        dimensions.1 / gcd_val
-    } else {
-        0
-    };
+    let ratio_w = dimensions.0.checked_div(gcd_val).unwrap_or(0);
+    let ratio_h = dimensions.1.checked_div(gcd_val).unwrap_or(0);
     let aspect_ratio = format!("{}:{}", ratio_w, ratio_h);
 
     let image_info = ImageInfo {
@@ -278,12 +270,9 @@ fn extract_heif_exif_data(path: &Path, data_slice: Option<&[u8]>) -> Option<Exif
         None
     };
 
-    let data_to_use = if let Some(d) = &temp_data {
-        d.as_slice()
-    } else if let Some(d) = data_slice {
-        d
-    } else {
-        return None;
+    let data_to_use = match &temp_data {
+        Some(d) => d.as_slice(),
+        None => data_slice?,
     };
 
     let ctx = HeifContext::read_from_bytes(data_to_use).ok()?;

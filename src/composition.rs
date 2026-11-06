@@ -94,8 +94,8 @@ pub fn generate_composition_lines(
     composition_type: CompositionType,
     image_rect: Rect,
 ) -> Vec<CompositionLine> {
-    let stroke = Stroke::new(2.0, Color32::WHITE);
-    let thin_stroke = Stroke::new(1.0, Color32::WHITE);
+    let stroke = Stroke::new(2.0_f32, Color32::WHITE);
+    let thin_stroke = Stroke::new(1.0_f32, Color32::WHITE);
 
     match composition_type {
         CompositionType::RuleOfThirds => rule_of_thirds(image_rect, stroke),
