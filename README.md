@@ -12,34 +12,33 @@ A high-performance image viewer written in Rust with GPU acceleration, advanced 
 
 ## ⚡ Installation
 
+Requirements: Rust (https://rustup.rs), `pkg-config` and `libheif` (macOS: `brew install pkg-config libheif`; Debian/Ubuntu: `apt install pkg-config libheif-dev libfontconfig1-dev`).
+
 ### Linux/macOS
 ```bash
-# Clone the repository
-git clone https://github.com/youruser/img-viewer.git
+git clone https://github.com/MrZeack/img-viewer.git
 cd img-viewer
-
-# Make build script executable
-chmod +x build.sh
-
-# Complete setup (installs dependencies, builds, and installs to ~/.local/bin)
-./build.sh --install-deps --install
+make install   # validates tools, builds optimized for this CPU, installs `img` to ~/.local/bin
 ```
+
+Variables: `INSTALL_DIR=/path` changes the destination; `NATIVE=0` builds a portable binary.
 
 ### Windows
 ```cmd
-# Install Rust from https://rustup.rs/ first, then:
 build.bat --native --install
 ```
 
-### Manual Build
-If you prefer using cargo directly:
-```bash
-# Build with maximum performance
-RUSTFLAGS="-C target-cpu=native" cargo build --release
+### Commands
 
-# Run directly
-./target/release/img_viewer
-```
+| Command | Description |
+|---|---|
+| `make install` | Validate tools, build release and install `img` |
+| `make build` | Portable release build in `target/release/` |
+| `make check` | `cargo fmt --check`, `clippy -D warnings`, tests and operational tests |
+| `make bump` | Bump version, update `CHANGELOG.md`, create commit and tag (no push). `TYPE=patch\|minor\|major` or `VERSION=X.Y.Z`; without them the type is inferred from Conventional Commits |
+| `cargo run --release` | Run from source |
+
+Release: `make bump`, then `git push origin main && git push origin vX.Y.Z`; pushing the tag runs the release workflow.
 
 ## 🎯 Usage
 
@@ -63,6 +62,9 @@ img /path/to/photos
 
 # Run with debug output
 RUST_LOG=debug img
+
+# Print version
+img --version
 ```
 
 ## 🎨 Composition Guides
@@ -80,22 +82,7 @@ RUST_LOG=debug img
 12. **Sinister Diagonal**
 13. **Aspect Ratio Guides**
 
-## 🔧 Build Options
-
-| Flag | Description |
-|------|-------------|
-| `--native` | Optimize for current CPU (Default) |
-| `--release` | Build optimized binary (Default) |
-| `--install` | Copy binary to local bin directory |
-| `--system` | Install to /usr/local/bin (requires sudo) |
-| `--install-deps` | Install required system libraries |
-
 ## 🐛 Troubleshooting
-
-**"Permission denied"**
-```bash
-chmod +x build.sh
-```
 
 **"Binary not in PATH"**
 Ensure `~/.local/bin` is in your PATH:
@@ -114,5 +101,5 @@ source ~/.bashrc
 ## 🤝 Contributing
 1. Fork the repository.
 2. Create a feature branch.
-3. Ensure `cargo fmt` and `cargo clippy` pass.
+3. Ensure `make check` passes.
 4. Submit a pull request.
