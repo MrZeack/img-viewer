@@ -152,9 +152,9 @@ pub fn extract_metadata(path: &Path) -> Result<ImageMetadata, AppError> {
         }) {
             if let Some(data) = file_data_slice {
                 // Try quickraw first
-                let jpg_data = match quickraw::Export::export_thumbnail_data(data) {
-                    Ok((d, orientation)) => Some((d.to_vec(), orientation as u32)),
-                    Err(_) => {
+                let jpg_data = match crate::image_loader::safe_export_thumbnail(data) {
+                    Some((d, orientation)) => Some((d, orientation)),
+                    None => {
                         // Fallback to manual extraction
                         extract_largest_jpeg(data).map(|d| (d, 1))
                     }
@@ -351,8 +351,8 @@ fn extract_raw_exif_data(path: &Path, data_slice: Option<&[u8]>) -> Option<ExifI
         None => {
             // If that doesn't work, try to use the quickraw approach or manual
             if let Some(data) = data_slice {
-                match quickraw::Export::export_thumbnail_data(data) {
-                    Ok((jpg_data, _orientation)) => {
+                match crate::image_loader::safe_export_thumbnail(data) {
+                    Some((jpg_data, _orientation)) => {
                         let file = std::io::Cursor::new(jpg_data);
                         let exif_reader = exif::Reader::new();
                         match exif_reader.read_from_container(&mut std::io::BufReader::new(file)) {
@@ -360,7 +360,7 @@ fn extract_raw_exif_data(path: &Path, data_slice: Option<&[u8]>) -> Option<ExifI
                             Err(_) => None,
                         }
                     }
-                    Err(_) => {
+                    None => {
                         // Fallback
                         if let Some(jpg_data) = extract_largest_jpeg(data) {
                             let file = std::io::Cursor::new(jpg_data);
@@ -383,8 +383,8 @@ fn extract_raw_exif_data(path: &Path, data_slice: Option<&[u8]>) -> Option<ExifI
                     Err(_) => return None,
                 };
 
-                match quickraw::Export::export_thumbnail_data(&data) {
-                    Ok((jpg_data, _orientation)) => {
+                match crate::image_loader::safe_export_thumbnail(&data) {
+                    Some((jpg_data, _orientation)) => {
                         let file = std::io::Cursor::new(jpg_data);
                         let exif_reader = exif::Reader::new();
                         match exif_reader.read_from_container(&mut std::io::BufReader::new(file)) {
@@ -392,7 +392,7 @@ fn extract_raw_exif_data(path: &Path, data_slice: Option<&[u8]>) -> Option<ExifI
                             Err(_) => None,
                         }
                     }
-                    Err(_) => {
+                    None => {
                         if let Some(jpg_data) = extract_largest_jpeg(&data) {
                             let file = std::io::Cursor::new(jpg_data);
                             let exif_reader = exif::Reader::new();

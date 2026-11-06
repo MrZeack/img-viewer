@@ -25,6 +25,6 @@ directories = "5.0"
 [profile.release]
 lto = true
 codegen-units = 1
-panic = "abort"
+panic = "unwind" # needed so panics in quickraw can be caught (see safe_export_thumbnail)
 
 [dev-dependencies]

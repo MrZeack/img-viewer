@@ -4,7 +4,6 @@ use crate::event::{EventBus, ViewerEvent};
 use egui::ColorImage;
 use image::{DynamicImage, ImageFormat};
 use libheif_rs::{HeifContext, LibHeif};
-use quickraw::Export;
 use rayon::prelude::*;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -203,9 +202,9 @@ fn load_jpeg_optimized(
 fn load_raw_preview(data: &[u8], target_size: Option<(u32, u32)>) -> Result<LoadedImage, AppError> {
     // Try to extract the embedded JPEG preview/thumbnail using quickraw first
     // Note: quickraw's export_thumbnail_data usually returns the largest embedded preview
-    let jpg_data = match Export::export_thumbnail_data(data) {
-        Ok((data, _orientation)) => data.to_vec(),
-        Err(_) => {
+    let jpg_data = match safe_export_thumbnail(data) {
+        Some((data, _orientation)) => data,
+        None => {
             // If quickraw fails (e.g. for CR3), try manual extraction of the largest JPEG
             extract_largest_jpeg(data).ok_or_else(|| {
                 AppError::ImageLoadError(
@@ -232,6 +231,25 @@ fn load_raw_preview(data: &[u8], target_size: Option<(u32, u32)>) -> Result<Load
 
     let color_image = dynamic_image_to_color_image(&img);
     Ok(LoadedImage { image: color_image })
+}
+
+/// Calls `quickraw::Export::export_thumbnail_data` while guarding against panics.
+///
+/// quickraw/quickexif index slices without bounds checks and panic on empty,
+/// truncated or unsupported files. A panic on a loader thread would otherwise
+/// bring down the whole app, so treat any panic as "no thumbnail".
+pub(crate) fn safe_export_thumbnail(data: &[u8]) -> Option<(Vec<u8>, u32)> {
+    // Too small to hold a valid TIFF/ISO-BMFF header; skip quickraw entirely.
+    if data.len() < 16 {
+        return None;
+    }
+    std::panic::catch_unwind(|| {
+        quickraw::Export::export_thumbnail_data(data)
+            .ok()
+            .map(|(jpg, orientation)| (jpg.to_vec(), orientation as u32))
+    })
+    .ok()
+    .flatten()
 }
 
 fn extract_largest_jpeg(data: &[u8]) -> Option<Vec<u8>> {
@@ -505,5 +523,19 @@ impl ImagePreloader {
     fn is_cached(&self, path: &Path) -> bool {
         let key = path.to_string_lossy().to_string();
         self.cache.contains(&key)
+    }
+}
+
+#[cfg(test)]
+mod safe_thumbnail_tests {
+    use super::safe_export_thumbnail;
+
+    #[test]
+    fn garbage_raw_does_not_panic() {
+        assert!(safe_export_thumbnail(&[]).is_none());
+        assert!(safe_export_thumbnail(&[0u8; 64]).is_none());
+        let mut tiff = b"II*\x00\x08\x00\x00\x00".to_vec();
+        tiff.extend_from_slice(&[0xFF; 32]);
+        assert!(safe_export_thumbnail(&tiff).is_none());
     }
 }
