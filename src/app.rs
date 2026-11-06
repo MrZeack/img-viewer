@@ -4,6 +4,12 @@ pub mod core;
 pub mod input;
 #[path = "app/state.rs"]
 pub mod state;
+#[path = "app/tag_actions.rs"]
+pub mod tag_actions;
+#[path = "app/tag_modal.rs"]
+pub mod tag_modal;
+#[path = "app/tags.rs"]
+pub mod tags;
 #[path = "app/ui.rs"]
 pub mod ui;
 

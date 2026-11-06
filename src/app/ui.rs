@@ -51,6 +51,8 @@ impl eframe::App for ImageViewerApp {
                                 get_image_files(&self.current_dir, self.sort_newest_first)
                                     .unwrap_or_default();
                             self.current_index = 0;
+                            self.tags.clear_assignments();
+                            self.last_moved = None;
                             self.current_image = None;
                             self.current_metadata = None;
                             if !self.image_files.is_empty() {
@@ -101,9 +103,9 @@ impl eframe::App for ImageViewerApp {
                         status_text.push_str(" - Calidad: MAX");
                     }
 
-                    if !self.bookmarks.is_empty() {
-                        let bookmarks: Vec<_> = self.bookmarks.keys().collect();
-                        status_text.push_str(&format!(" - Bookmarks: {:?}", bookmarks));
+                    if let Some(slot) = self.current_path().and_then(|p| self.tags.tag_of(p)) {
+                        let name = self.tags.name(slot).unwrap_or_default();
+                        status_text.push_str(&format!(" - Tag {}: {}", slot, name));
                     }
 
                     if let Some((message, _)) = &self.status_message {
@@ -114,7 +116,7 @@ impl eframe::App for ImageViewerApp {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label("LEFT/RIGHT: Navigate | Wheel: Zoom | L: Like | W: Worse | D: Delete | U: Undo | C: Composición | Shift+C: Off | F: Focus | H: Calidad | UP/DOWN: Tipo | R/Shift+R: Rotate | 1-9: Bookmarks | 0: Clear");
+                    ui.label("LEFT/RIGHT: Navigate | Wheel: Zoom | L: Like | W: Worse | D: Delete | U: Undo | C: Composición | Shift+C: Off | F: Focus | H: Calidad | UP/DOWN: Tipo | R/Shift+R: Rotate | 1-9: Tag | 0: Quitar tag | T: Tags | M: Mover tags");
                 });
             });
         });
@@ -125,6 +127,17 @@ impl eframe::App for ImageViewerApp {
                 .resizable(true)
                 .default_width(self.sidebar_width)
                 .show(ctx, |ui| {
+                    let tag_counts = self.tags.counts(&self.image_files);
+                    if !tag_counts.is_empty() {
+                        ui.group(|ui| {
+                            ui.strong("TAGS (M: mover)");
+                            for (slot, count) in &tag_counts {
+                                let name = self.tags.name(*slot).unwrap_or_default();
+                                ui.label(format!("{slot} · {name}: {count}"));
+                            }
+                        });
+                    }
+
                     ui.heading("METADATOS");
                     ui.separator();
 
@@ -526,6 +539,8 @@ impl eframe::App for ImageViewerApp {
                 });
             }
         });
+
+        self.show_tag_modal(ctx);
 
         // Repaint throttle: only when needed
         let mut needs_repaint = false;

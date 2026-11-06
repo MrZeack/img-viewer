@@ -58,11 +58,13 @@ pub struct ImageViewerApp {
     /// Status message with expiration time
     pub(crate) status_message: Option<(String, Instant)>,
 
-    /// Bookmarks for quick navigation (keys 1-9)
-    pub(crate) bookmarks: HashMap<usize, BookmarkState>,
+    /// Tags 1-9: names (persisted) and session assignments
+    pub(crate) tags: super::tags::TagStore,
+    /// Open tag modal, if any (blocks global shortcuts)
+    pub(crate) tag_modal: Option<super::tags::TagModal>,
 
-    /// Information about the last moved image for undo functionality
-    pub(crate) last_moved: Option<(PathBuf, PathBuf, String, usize)>, // source, dest, type, previous index
+    /// Last move, for undo (U)
+    pub(crate) last_moved: Option<LastMove>,
 
     /// Time of last general cache cleanup
     pub(crate) last_cache_cleanup: Instant,
@@ -106,21 +108,18 @@ impl ImageViewerApp {
     }
 }
 
-/// Represents the state of a bookmarked image position
+/// Last move performed, so it can be undone
 #[derive(Clone, Debug)]
-pub(crate) struct BookmarkState {
-    /// Index of the image in the current directory
-    pub(crate) index: usize,
-    /// Zoom level at the time of bookmarking
-    pub(crate) zoom: f32,
-    /// Position of the image view at the time of bookmarking
-    pub(crate) position: egui::Vec2,
-    /// Whether composition lines were visible
-    pub(crate) composition: bool,
-    /// The type of composition guide that was active
-    pub(crate) composition_type: CompositionType,
-    /// Rotation at the time of bookmarking
-    pub(crate) rotation: i32,
+pub(crate) enum LastMove {
+    /// Single image moved to best/worse/deleted
+    Single {
+        source: PathBuf,
+        dest: PathBuf,
+        label: String,
+        index: usize,
+    },
+    /// Tagged images moved to their tag folders
+    Batch(Vec<super::tags::PlannedMove>),
 }
 
 impl ImageViewerApp {
@@ -249,6 +248,57 @@ impl ImageViewerApp {
 
 pub(crate) fn current_path_from(image_files: &[PathBuf], current_index: usize) -> Option<&PathBuf> {
     image_files.get(current_index)
+}
+
+#[cfg(test)]
+pub(crate) fn test_app(files: Vec<PathBuf>, current_index: usize) -> ImageViewerApp {
+    use crate::cache::ImageCache;
+    use crate::event::EventBus;
+    let (tx, rx) = mpsc::channel::<ViewerEvent>();
+    let event_bus = EventBus::new(tx, None);
+    let image_loader = ImageLoader::new(1, event_bus.clone());
+    let preloader = ImagePreloader::new(
+        ImageCache::new(2),
+        1,
+        event_bus.clone(),
+        1,
+        image_loader.pending_requests(),
+    );
+    ImageViewerApp {
+        current_dir: PathBuf::from("/tmp"),
+        image_files: files,
+        current_index,
+        current_image: None,
+        zoom_factor: 1.0,
+        image_position: egui::Vec2::ZERO,
+        image_cache: ImageCache::new(2),
+        metadata_cache: MetadataCache::new(2),
+        composition_cache: CompositionCache::new(2),
+        image_loader,
+        preloader,
+        loading_requests: HashMap::new(),
+        current_metadata: None,
+        metadata_loader: MetadataLoader::new(1, event_bus),
+        show_composition: false,
+        composition_type: CompositionType::RuleOfThirds,
+        show_sidebar: true,
+        sidebar_width: 320.0,
+        status_message: None,
+        tags: Default::default(),
+        tag_modal: None,
+        last_moved: None,
+        last_cache_cleanup: Instant::now(),
+        last_distant_cleanup: Instant::now(),
+        event_receiver: rx,
+        should_close: false,
+        sort_newest_first: true,
+        max_cached_dimension: 1024,
+        rotation: 0,
+        rotation_manually_set: false,
+        show_focus_peaking: false,
+        quality_multiplier: 1,
+        config: crate::config::Config::default(),
+    }
 }
 
 #[cfg(test)]

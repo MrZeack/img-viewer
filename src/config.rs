@@ -23,6 +23,16 @@ pub struct Config {
     /// View-related configuration (persistence for composition and focus peaking)
     #[serde(default)]
     pub view: ViewConfig,
+    /// Tag names by slot ("1".."9")
+    #[serde(default)]
+    pub tags: TagsConfig,
+}
+
+/// Persistent tag names; assignments live only in the session
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
+pub struct TagsConfig {
+    #[serde(default)]
+    pub names: std::collections::BTreeMap<String, String>,
 }
 
 fn default_config_version() -> u32 {
@@ -112,6 +122,7 @@ impl Default for Config {
             performance: PerformanceConfig::default(),
             browsing: BrowsingConfig::default(),
             view: ViewConfig::default(),
+            tags: TagsConfig::default(),
         }
     }
 }
@@ -197,12 +208,18 @@ pub fn migrate_config_str(content: &str) -> Result<Config, toml::de::Error> {
         .and_then(|v| v.clone().try_into().ok())
         .unwrap_or_default();
 
+    let tags = table
+        .get("tags")
+        .and_then(|v| v.clone().try_into().ok())
+        .unwrap_or_default();
+
     Ok(Config {
         version: CURRENT_CONFIG_VERSION,
         cache,
         performance,
         browsing,
         view,
+        tags,
     })
 }
 
@@ -270,5 +287,23 @@ mod tests {
         assert!(!migrated.browsing.sort_newest_first);
         assert!(!migrated.view.show_composition);
         assert_eq!(migrated.view.composition_type, "RuleOfThirds");
+    }
+
+    #[test]
+    fn test_tag_names_persist_and_default_to_empty() {
+        let migrated = migrate_config_str("[browsing]\nsort_newest_first = true\n").unwrap();
+        assert!(migrated.tags.names.is_empty());
+
+        let mut config = Config::default();
+        config
+            .tags
+            .names
+            .insert("3".to_string(), "Familia".to_string());
+        let toml_str = toml::to_string(&config).unwrap();
+        let reloaded = migrate_config_str(&toml_str).unwrap();
+        assert_eq!(
+            reloaded.tags.names.get("3").map(String::as_str),
+            Some("Familia")
+        );
     }
 }

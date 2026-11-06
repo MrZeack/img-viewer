@@ -51,8 +51,10 @@ Release: `make bump`, then `git push origin main && git push origin vX.Y.Z`. No 
 - **U** : Undo last move
 - **C** : Toggle composition lines
 - **↑ ↓** : Change composition type
-- **1-9** : Save/restore bookmarks
-- **0** : Clear all bookmarks
+- **1-9** : Toggle tag N on the current image (first use asks for the tag name)
+- **0** : Remove the tag from the current image
+- **T** : Edit tag names (saved in `config.toml`)
+- **M** : Move tagged images to `<folder>/<tag name>/` (U undoes the whole batch; existing files are skipped)
 - **Esc** : Exit
 
 ### Advanced Options
