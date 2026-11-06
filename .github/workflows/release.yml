@@ -1,69 +1,150 @@
-name: Release Build
+name: Release
 
+# REL-4: se dispara con el push de un tag vX.Y.Z creado por `make bump`.
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*.*.*"]
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Validate tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Tag matches Cargo.toml and commit is on main
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(awk -F'"' '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version = /{print $2;exit}' Cargo.toml)
+          [[ "${TAG#v}" == "$version" ]] || { echo "::error::tag $TAG no coincide con Cargo.toml ($version)"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$GITHUB_SHA no pertenece a main"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: CI passed for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for _ in $(seq 60); do
+            runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push" \
+              --jq '[.workflow_runs[] | .conclusion // "pending"] | join(" ")')
+            [[ " $runs " == *" success "* ]] && exit 0
+            [[ -n "$runs" && " $runs " != *" pending "* ]] && { echo "::error::CI falló para $GITHUB_SHA ($runs)"; exit 1; }
+            sleep 30
+          done
+          echo "::error::CI no terminó a tiempo para $GITHUB_SHA"; exit 1
+
   build:
-    name: Build on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Build ${{ matrix.os_name }}-${{ matrix.arch }}
+    needs: validate
+    runs-on: ${{ matrix.runner }}
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
-          - os: windows-latest
-            artifact_name: img_viewer.exe
-            asset_name: img-viewer-windows.zip
-          - os: macos-latest
-            artifact_name: img_viewer
-            asset_name: img-viewer-macos.zip
-
+          - runner: macos-latest
+            os_name: macos
+            arch: arm64
+            bin: img_viewer
+          - runner: windows-latest
+            os_name: windows
+            arch: x86_64
+            bin: img_viewer.exe
+    env:
+      ASSET: img-viewer-${{ needs.validate.outputs.version }}-${{ matrix.os_name }}-${{ matrix.arch }}.zip
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-
-      # Required system dependencies for building GUI/image libraries
       - name: Install dependencies (macOS)
-        if: matrix.os == 'macos-latest'
-        run: |
-          brew update
-          brew install libheif pkg-config
+        if: matrix.os_name == 'macos'
+        run: brew install libheif pkg-config
 
       - name: Install dependencies (Windows)
-        if: matrix.os == 'windows-latest'
+        if: matrix.os_name == 'windows'
         shell: pwsh
         run: |
           vcpkg install libheif:x64-windows-static-md
           "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "VCPKGRS_TRIPLET=x64-windows-static-md" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Build release binary
-        run: cargo build --release
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
-      - name: Package Windows App
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          Compress-Archive -Path target/release/${{ matrix.artifact_name }} -DestinationPath ${{ matrix.asset_name }}
+      - name: Build
+        run: cargo build --release --locked
 
-      - name: Package macOS App
-        if: matrix.os == 'macos-latest'
-        run: |
-          zip -j ${{ matrix.asset_name }} target/release/${{ matrix.artifact_name }}
-
-      - name: Upload binaries to release
-        uses: softprops/action-gh-release@v3
-        with:
-          files: ${{ matrix.asset_name }}
+      - name: Verify binary version
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          out=$("target/release/${{ matrix.bin }}" --version | tr -d '\r')
+          [[ "$out" == "img-viewer $VERSION" ]] || { echo "::error::--version devolvió '$out'"; exit 1; }
+
+      - name: Package (macOS)
+        if: matrix.os_name == 'macos'
+        run: zip -j "$ASSET" "target/release/${{ matrix.bin }}"
+
+      - name: Package (Windows)
+        if: matrix.os_name == 'windows'
+        shell: pwsh
+        run: Compress-Archive -Path "target/release/${{ matrix.bin }}" -DestinationPath $env:ASSET
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum *.zip > SHA256SUMS && sha256sum -c SHA256SUMS
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.zip
+
+      - name: Release notes from CHANGELOG
+        run: |
+          awk -v h="## [$VERSION]" 'index($0, h) == 1 {f=1; next} f && /^## /{exit} f' CHANGELOG.md > notes.md
+          [[ -s notes.md ]] || { echo "::error::CHANGELOG.md no tiene sección para $VERSION"; exit 1; }
+
+      - name: Create draft, upload and publish
+        run: |
+          prerelease=$([[ "$VERSION" == *-rc.* ]] && echo --prerelease || true)
+          gh release create "$TAG" dist/* --draft --verify-tag --title "$TAG" --notes-file notes.md $prerelease
+          gh release edit "$TAG" --draft=false
