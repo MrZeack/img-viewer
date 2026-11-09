@@ -5,6 +5,7 @@ mod app;
 mod cache;
 mod composition;
 mod config;
+mod cr3;
 mod errors;
 mod event;
 mod focus;

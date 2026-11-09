@@ -5,6 +5,7 @@ use egui::ColorImage;
 use image::{DynamicImage, ImageFormat};
 use libheif_rs::{HeifContext, LibHeif};
 use rayon::prelude::*;
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -200,19 +201,23 @@ fn load_jpeg_optimized(
 }
 
 fn load_raw_preview(data: &[u8], target_size: Option<(u32, u32)>) -> Result<LoadedImage, AppError> {
-    // Try to extract the embedded JPEG preview/thumbnail using quickraw first
-    // Note: quickraw's export_thumbnail_data usually returns the largest embedded preview
-    let jpg_data = match safe_export_thumbnail(data) {
-        Some((data, _orientation)) => data,
-        None => {
-            // If quickraw fails (e.g. for CR3), try manual extraction of the largest JPEG
-            extract_largest_jpeg(data).ok_or_else(|| {
-                AppError::ImageLoadError(
-                    "Failed to extract RAW preview (quickraw and manual fallback failed)"
-                        .to_string(),
-                )
-            })?
-        }
+    // CR3 is not supported by quickraw: read its full-size JPEG from the container
+    let jpg_data = match crate::cr3::preview_jpeg(data) {
+        Some(jpg) => Cow::Borrowed(jpg),
+        // Otherwise extract the embedded JPEG preview/thumbnail using quickraw
+        // Note: quickraw's export_thumbnail_data usually returns the largest embedded preview
+        None => match safe_export_thumbnail(data) {
+            Some((data, _orientation)) => Cow::Owned(data),
+            None => {
+                // If quickraw fails, try manual extraction of the largest JPEG
+                Cow::Owned(extract_largest_jpeg(data).ok_or_else(|| {
+                    AppError::ImageLoadError(
+                        "Failed to extract RAW preview (quickraw and manual fallback failed)"
+                            .to_string(),
+                    )
+                })?)
+            }
+        },
     };
 
     // Load the JPEG data
