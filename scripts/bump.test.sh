@@ -79,7 +79,7 @@ if CHECK_CMD=true "$BUMP" >/dev/null 2>&1; then
     grep -q "^## \[$new\] - " CHANGELOG.md && ok "sección en CHANGELOG" || err "falta sección en CHANGELOG"
     grep -q "synthetic feature" CHANGELOG.md && ok "changelog desde commits" || err "changelog sin commits"
     [[ $(git log -1 --format=%s) == "chore(release): v$new" ]] && ok "mensaje de commit" || err "mensaje: $(git log -1 --format=%s)"
-    files=$(git show --name-only --format= HEAD | sort | tr '\n' ' ')
+    files=$(git show --name-only --format= HEAD | LC_ALL=C sort | tr '\n' ' ')
     [[ "$files" == "CHANGELOG.md Cargo.lock Cargo.toml " ]] && ok "solo manifiestos y changelog" || err "archivos: $files"
     [[ $(git cat-file -t "v$new") == tag ]] && ok "tag anotado" || err "tag no anotado"
     [[ -z $(git status --porcelain) ]] && ok "árbol limpio" || err "árbol sucio tras bump"
