@@ -8,6 +8,7 @@
 //! La orientación EXIF se aplica aquí; HEIF ya la aplica libheif.
 use egui::ColorImage;
 use image::RgbImage;
+use std::borrow::Cow;
 use std::path::Path;
 
 pub const JPEG_QUALITY: u8 = 82;
@@ -45,11 +46,8 @@ pub fn generate(path: &Path, max: u32) -> Result<RgbImage, String> {
         }
         "arw" | "cr3" => {
             let map = map_file(path)?;
-            let preview = crate::image_loader::safe_export_thumbnail(&map)
-                .map(|(jpg, _)| jpg)
-                .or_else(|| bounded_preview_jpeg(&map, RAW_PREVIEW_SCAN_BYTES).map(<[u8]>::to_vec))
-                .ok_or("RAW sin vista previa embebida")?;
-            let orientation = tiff_orientation(&map).or_else(|| container_orientation(&preview));
+            let (preview, orientation) =
+                raw_preview(&map).ok_or("RAW sin vista previa embebida")?;
             (decode_jpeg_scaled(&preview, max)?, orientation)
         }
         "hif" | "heic" => {
@@ -69,6 +67,21 @@ pub fn generate(path: &Path, max: u32) -> Result<RgbImage, String> {
         image::imageops::thumbnail(&img, w, h)
     };
     Ok(apply_exif_orientation(img, orientation.unwrap_or(1)))
+}
+
+/// Vista previa JPEG embebida y orientación EXIF de un RAW.
+/// CR3 se lee del contenedor ISO-BMFF; el resto (TIFF/ARW) con quickraw o escaneo acotado.
+fn raw_preview(data: &[u8]) -> Option<(Cow<'_, [u8]>, Option<u32>)> {
+    if crate::cr3::is_cr3(data) {
+        if let Some(jpg) = crate::cr3::preview_jpeg(data) {
+            return Some((Cow::Borrowed(jpg), crate::cr3::orientation(data)));
+        }
+    }
+    let preview = crate::image_loader::safe_export_thumbnail(data)
+        .map(|(jpg, _)| Cow::Owned(jpg))
+        .or_else(|| bounded_preview_jpeg(data, RAW_PREVIEW_SCAN_BYTES).map(Cow::Borrowed))?;
+    let orientation = tiff_orientation(data).or_else(|| container_orientation(&preview));
+    Some((preview, orientation))
 }
 
 fn map_file(path: &Path) -> Result<memmap2::Mmap, String> {
@@ -332,6 +345,17 @@ mod tests {
             let thumb = generate(&sample(name), 320).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(long_edge(&thumb), 320, "{name}");
         }
+    }
+
+    #[test]
+    fn cr3_uses_container_preview_and_orientation() {
+        let path = sample(
+            "canon-eos-r50-2025-08-08-canon-eos-r50-2025-08-08-img_8333-56f54f9a-56f54f9a.cr3",
+        );
+        let data = std::fs::read(&path).unwrap();
+        let (preview, orientation) = raw_preview(&data).unwrap();
+        assert_eq!(&*preview, crate::cr3::preview_jpeg(&data).unwrap());
+        assert_eq!(orientation, crate::cr3::orientation(&data));
     }
 
     #[test]
