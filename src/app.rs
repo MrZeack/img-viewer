@@ -1,5 +1,9 @@
 #[path = "app/core.rs"]
 pub mod core;
+#[path = "app/grid.rs"]
+pub mod grid;
+#[path = "app/grid_layout.rs"]
+pub mod grid_layout;
 #[path = "app/input.rs"]
 pub mod input;
 #[path = "app/state.rs"]

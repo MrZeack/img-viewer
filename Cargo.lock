@@ -2090,6 +2090,7 @@ dependencies = [
  "eframe",
  "egui",
  "image",
+ "jpeg-decoder",
  "kamadak-exif",
  "libheif-rs",
  "little_exif",

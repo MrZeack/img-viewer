@@ -12,6 +12,7 @@ mod focus;
 mod image_loader;
 mod metadata_loader;
 mod metadata_simple;
+mod thumbnails;
 
 use app::ImageViewerApp;
 

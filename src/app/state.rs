@@ -63,6 +63,10 @@ pub struct ImageViewerApp {
     /// Open tag modal, if any (blocks global shortcuts)
     pub(crate) tag_modal: Option<super::tags::TagModal>,
 
+    /// Grid (thumbnail) view instead of the single image
+    pub(crate) show_grid: bool,
+    pub(crate) grid: super::grid::GridState,
+
     /// Last move, for undo (U)
     pub(crate) last_moved: Option<LastMove>,
 
@@ -286,6 +290,8 @@ pub(crate) fn test_app(files: Vec<PathBuf>, current_index: usize) -> ImageViewer
         status_message: None,
         tags: Default::default(),
         tag_modal: None,
+        show_grid: false,
+        grid: Default::default(),
         last_moved: None,
         last_cache_cleanup: Instant::now(),
         last_distant_cleanup: Instant::now(),

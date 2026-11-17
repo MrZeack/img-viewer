@@ -10,18 +10,21 @@ impl ImageViewerApp {
         if self.tag_modal.is_some() || ctx.wants_keyboard_input() {
             return;
         }
-        if ctx.input(|i| i.key_pressed(Key::ArrowLeft)) {
+        if self.show_grid {
+            if !self.handle_grid_keys(ctx) {
+                self.handle_move_keys(ctx);
+            }
+            self.handle_tag_keys(ctx);
+            return;
+        }
+
+        if ctx.input(|i| i.key_pressed(Key::G)) {
+            self.open_grid();
+        } else if ctx.input(|i| i.key_pressed(Key::ArrowLeft)) {
             self.previous_image(ctx);
         } else if ctx.input(|i| i.key_pressed(Key::ArrowRight)) {
             self.next_image(ctx);
-        } else if ctx.input(|i| i.key_pressed(Key::L)) {
-            self.like_image(ctx);
-        } else if ctx.input(|i| i.key_pressed(Key::W)) {
-            self.worse_image(ctx);
-        } else if ctx.input(|i| i.key_pressed(Key::D)) {
-            self.delete_image(ctx);
-        } else if ctx.input(|i| i.key_pressed(Key::U)) {
-            self.undo_last_move(ctx);
+        } else if self.handle_move_keys(ctx) {
         } else if ctx.input(|i| i.key_pressed(Key::C)) {
             let shift = ctx.input(|i| i.modifiers.shift);
             if shift {
@@ -90,7 +93,27 @@ impl ImageViewerApp {
             self.load_current_image_with_reset(ctx, false);
         }
 
-        // Tags: 1-9 toggle, 0 untag, T manage names, M move tagged images
+        self.handle_tag_keys(ctx);
+    }
+
+    /// L/W/D/U; devuelve `true` si consumió la tecla.
+    fn handle_move_keys(&mut self, ctx: &Context) -> bool {
+        if ctx.input(|i| i.key_pressed(Key::L)) {
+            self.like_image(ctx);
+        } else if ctx.input(|i| i.key_pressed(Key::W)) {
+            self.worse_image(ctx);
+        } else if ctx.input(|i| i.key_pressed(Key::D)) {
+            self.delete_image(ctx);
+        } else if ctx.input(|i| i.key_pressed(Key::U)) {
+            self.undo_last_move(ctx);
+        } else {
+            return false;
+        }
+        true
+    }
+
+    /// Tags: 1-9 asigna, 0 quita, T edita nombres, M mueve las etiquetadas.
+    fn handle_tag_keys(&mut self, ctx: &Context) {
         for slot in 1..=9u8 {
             if let Some(key) = Key::from_name(&slot.to_string()) {
                 if ctx.input(|i| i.key_pressed(key)) {

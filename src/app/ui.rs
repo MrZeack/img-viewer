@@ -108,6 +108,14 @@ impl eframe::App for ImageViewerApp {
                         status_text.push_str(&format!(" - Tag {}: {}", slot, name));
                     }
 
+                    if self.show_grid {
+                        if let Some((done, total)) = self.grid.progress() {
+                            if done < total {
+                                status_text.push_str(&format!(" - Miniaturas: {done}/{total}"));
+                            }
+                        }
+                    }
+
                     if let Some((message, _)) = &self.status_message {
                         status_text.push_str(&format!(" - {}", message));
                     }
@@ -116,13 +124,17 @@ impl eframe::App for ImageViewerApp {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label("LEFT/RIGHT: Navigate | Wheel: Zoom | L: Like | W: Worse | D: Delete | U: Undo | C: Composición | Shift+C: Off | F: Focus | H: Calidad | UP/DOWN: Tipo | R/Shift+R: Rotate | 1-9: Tag | 0: Quitar tag | T: Tags | M: Mover tags");
+                    if self.show_grid {
+                        ui.label("Flechas/RePág/AvPág: Mover | Enter/G/Esc/Doble clic: Abrir | +/-/Pinch: Tamaño | L/W/D/U | 1-9/0: Tag | M: Mover tags");
+                        return;
+                    }
+                    ui.label("G: Cuadrícula | LEFT/RIGHT: Navigate | Wheel: Zoom | L: Like | W: Worse | D: Delete | U: Undo | C: Composición | Shift+C: Off | F: Focus | H: Calidad | UP/DOWN: Tipo | R/Shift+R: Rotate | 1-9: Tag | 0: Quitar tag | T: Tags | M: Mover tags");
                 });
             });
         });
 
         // Metadata sidebar
-        if self.show_sidebar {
+        if self.show_sidebar && !self.show_grid {
             SidePanel::right("metadata_sidebar")
                 .resizable(true)
                 .default_width(self.sidebar_width)
@@ -318,6 +330,13 @@ impl eframe::App for ImageViewerApp {
         }
 
         // Main image display
+        if self.show_grid {
+            CentralPanel::default().show(ctx, |ui| self.show_grid_view(ui, ctx));
+            self.show_tag_modal(ctx);
+            self.schedule_repaint(ctx);
+            return;
+        }
+
         CentralPanel::default().show(ctx, |ui| {
             let focus_texture_storage;
             let current_path_str = self.current_path().map(|p| p.to_string_lossy().to_string());
@@ -541,8 +560,22 @@ impl eframe::App for ImageViewerApp {
         });
 
         self.show_tag_modal(ctx);
+        self.schedule_repaint(ctx);
+    }
+}
 
-        // Repaint throttle: only when needed
+impl ImageViewerApp {
+    /// Repaint throttle: only when needed
+    fn schedule_repaint(&self, ctx: &Context) {
+        // El contador de indexación avanza sin eventos de UI: refrescarlo con calma.
+        if self.show_grid
+            && self
+                .grid
+                .progress()
+                .is_some_and(|(done, total)| done < total)
+        {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
         let mut needs_repaint = false;
         if let Some((_, expiry)) = &self.status_message {
             if Instant::now() <= *expiry {

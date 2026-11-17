@@ -21,6 +21,7 @@ quickraw = "0.1.6"
 little_exif = "0.6"
 memmap2 = "0.9"
 directories = "5.0"
+jpeg-decoder = { version = "0.3", default-features = false }
 
 [profile.release]
 lto = true

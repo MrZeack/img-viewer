@@ -57,6 +57,14 @@ Release: `make bump`, then `git push origin main && git push origin vX.Y.Z`. No 
 - **M** : Move tagged images to `<folder>/<tag name>/` (U undoes the whole batch; existing files are skipped)
 - **Esc** : Exit
 
+### Grid View
+- **G** : Toggle the thumbnail grid (Enter, Esc or double-click opens the selected image)
+- **Arrows / PageUp / PageDown / Home / End** : Move the selection
+- **+ / - / pinch** : Thumbnail size
+- **L/W/D/U, 1-9, 0, M** : Work on the selected image as in single view
+
+Thumbnails are generated in the background (visible first, then the rest of the folder) and stored in an index under the user cache directory (`~/Library/Caches/fyi.voza.img-viewer/thumbs/` on macOS, `~/.cache/img-viewer/thumbs/` on Linux). Reopening a folder reuses it; changed files are regenerated. Deleting that directory is safe.
+
 ### Advanced Options
 ```bash
 # Run in specific directory
