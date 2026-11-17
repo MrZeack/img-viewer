@@ -2,6 +2,14 @@
 
 Cambios por versión según [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y [SemVer](https://semver.org/lang/es/). `make bump` genera cada sección desde los commits.
 
+## [0.3.0] - 2026-11-17
+
+### Added
+
+- move keyboard shortcuts from the status bar to a help modal
+- add four display orders and background folder loading
+- add automatic 1-10 photo rating with NIMA and technical checks
+
 ## [0.2.1] - 2026-11-16
 
 ### Added
