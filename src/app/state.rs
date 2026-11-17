@@ -65,6 +65,8 @@ pub struct ImageViewerApp {
 
     /// Grid (thumbnail) view instead of the single image
     pub(crate) show_grid: bool,
+    /// Modal de atajos de teclado (F1 / ?)
+    pub(crate) show_help: bool,
     /// Orden de visualización (S lo recorre)
     pub(crate) sort_order: super::sorting::SortOrder,
     /// Fecha de modificación de cada archivo, leída al escanear la carpeta
@@ -294,6 +296,7 @@ pub(crate) fn test_app(files: Vec<PathBuf>, current_index: usize) -> ImageViewer
         tags: Default::default(),
         tag_modal: None,
         show_grid: false,
+        show_help: false,
         sort_order: Default::default(),
         mtimes: HashMap::new(),
         folder_load: None,

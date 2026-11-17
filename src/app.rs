@@ -6,6 +6,8 @@ pub mod folder_load;
 pub mod grid;
 #[path = "app/grid_layout.rs"]
 pub mod grid_layout;
+#[path = "app/help.rs"]
+pub mod help;
 #[path = "app/input.rs"]
 pub mod input;
 #[path = "app/rating.rs"]

@@ -7,7 +7,10 @@ use std::path::Path;
 impl ImageViewerApp {
     pub(crate) fn handle_keyboard_input(&mut self, ctx: &Context) {
         // A modal or a focused text field owns the keyboard: typing must not trigger moves.
-        if self.tag_modal.is_some() || self.is_loading() || ctx.wants_keyboard_input() {
+        if self.tag_modal.is_some() || ctx.wants_keyboard_input() {
+            return;
+        }
+        if self.handle_help_keys(ctx) || self.is_loading() {
             return;
         }
         if self.show_grid {

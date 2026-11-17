@@ -59,6 +59,12 @@ impl eframe::App for ImageViewerApp {
                         self.should_close = true;
                     }
                 });
+                ui.menu_button("Ayuda", |ui| {
+                    if ui.button("Atajos de teclado (F1)").clicked() {
+                        self.toggle_help();
+                        ui.close_menu();
+                    }
+                });
                 ui.menu_button("Orden", |ui| {
                     for order in super::sorting::SortOrder::ALL {
                         if ui.radio(self.sort_order == order, order.label()).clicked() {
@@ -74,7 +80,8 @@ impl eframe::App for ImageViewerApp {
         TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if !self.image_files.is_empty() {
-                    let current_file = self.current_path()
+                    let current_file = self
+                        .current_path()
                         .and_then(|path| path.file_name())
                         .unwrap_or_default()
                         .to_string_lossy();
@@ -92,7 +99,8 @@ impl eframe::App for ImageViewerApp {
                     }
 
                     if self.show_composition {
-                        status_text.push_str(&format!(" - Composición: {}", self.composition_type.name()));
+                        status_text
+                            .push_str(&format!(" - Composición: {}", self.composition_type.name()));
                     }
 
                     if self.show_focus_peaking {
@@ -128,11 +136,9 @@ impl eframe::App for ImageViewerApp {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self.show_grid {
-                        ui.label("Flechas/RePág/AvPág: Mover | Enter/G/Esc/Doble clic: Abrir | +/-/Pinch: Tamaño | L/W/D/U | 1-9/0: Tag | M: Mover tags | S: Cambiar orden");
-                        return;
+                    if ui.small_button("Atajos (F1)").clicked() {
+                        self.toggle_help();
                     }
-                    ui.label("G: Cuadrícula | LEFT/RIGHT: Navigate | Wheel: Zoom | L: Like | W: Worse | D: Delete | U: Undo | C: Composición | Shift+C: Off | F: Focus | H: Calidad | UP/DOWN: Tipo | R/Shift+R: Rotate | 1-9: Tag | 0: Quitar tag | T: Tags | M: Mover tags | S: Cambiar orden");
                 });
             });
         });
@@ -378,6 +384,7 @@ impl eframe::App for ImageViewerApp {
                     });
                 });
             });
+            self.show_help_modal(ctx);
             self.schedule_repaint(ctx);
             return;
         }
@@ -385,6 +392,7 @@ impl eframe::App for ImageViewerApp {
         if self.show_grid {
             CentralPanel::default().show(ctx, |ui| self.show_grid_view(ui, ctx));
             self.show_tag_modal(ctx);
+            self.show_help_modal(ctx);
             self.schedule_repaint(ctx);
             return;
         }
@@ -615,6 +623,7 @@ impl eframe::App for ImageViewerApp {
         });
 
         self.show_tag_modal(ctx);
+        self.show_help_modal(ctx);
         self.schedule_repaint(ctx);
     }
 }

@@ -55,6 +55,7 @@ impl ImageViewerApp {
             tags: super::tags::TagStore::from_config(&config.tags.names),
             tag_modal: None,
             show_grid: false,
+            show_help: false,
             sort_order: super::sorting::SortOrder::from_config(&config.browsing.sort_order),
             mtimes: std::collections::HashMap::new(),
             folder_load: None,

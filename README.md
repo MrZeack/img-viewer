@@ -43,6 +43,8 @@ Release: `make bump`, then `git push origin main && git push origin vX.Y.Z`. No 
 ## 🎯 Usage
 
 ### Keyboard Shortcuts
+**F1** or **?** opens the full shortcut list inside the app (also *Ayuda* menu and the status bar button).
+
 - **← →** : Navigate images
 - **Mouse Wheel** : Zoom in/out
 - **Mouse Drag** : Pan when zoomed
