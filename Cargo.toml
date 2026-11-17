@@ -22,6 +22,11 @@ little_exif = "0.6"
 memmap2 = "0.9"
 directories = "5.0"
 jpeg-decoder = { version = "0.3", default-features = false }
+tract-onnx = "0.23.9"
+
+# Decodificación de imágenes e inferencia son muy lentas sin optimizar; solo afecta a dependencias.
+[profile.dev.package."*"]
+opt-level = 2
 
 [profile.release]
 lto = true

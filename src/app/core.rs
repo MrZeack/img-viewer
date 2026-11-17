@@ -63,6 +63,7 @@ impl ImageViewerApp {
             tags: super::tags::TagStore::from_config(&config.tags.names),
             tag_modal: None,
             show_grid: false,
+            sort_by_score: false,
             grid: Default::default(),
             last_moved: None,
             last_cache_cleanup: Instant::now(),

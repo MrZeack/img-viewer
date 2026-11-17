@@ -7,7 +7,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-const MAGIC: &[u8; 8] = b"IVTHUMB1";
+use crate::scoring::Score;
+
+const MAGIC: &[u8; 8] = b"IVTHUMB2";
 const COMPACT_MIN_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,17 +33,19 @@ impl FileStamp {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct Entry {
     stamp: FileStamp,
     offset: u64,
     len: u32,
+    score: Score,
 }
 
 #[derive(Debug)]
 pub struct ThumbIndex {
     dir: PathBuf,
     thumb_max: u32,
+    scoring_version: u32,
     generation: u32,
     entries: HashMap<String, Entry>,
     data: File,
@@ -65,11 +69,11 @@ fn open_data(path: &Path) -> io::Result<File> {
 impl ThumbIndex {
     /// Abre (o crea) el índice de `dir`. Un índice ilegible o de otro tamaño de miniatura
     /// se descarta y se empieza vacío: el caché siempre se puede regenerar.
-    pub fn open(dir: &Path, thumb_max: u32) -> io::Result<Self> {
+    pub fn open(dir: &Path, thumb_max: u32, scoring_version: u32) -> io::Result<Self> {
         fs::create_dir_all(dir)?;
         let parsed = fs::read(dir.join("index.bin"))
             .ok()
-            .and_then(|bytes| parse_index(&bytes, thumb_max));
+            .and_then(|bytes| parse_index(&bytes, thumb_max, scoring_version));
         let (generation, mut entries) = parsed.unwrap_or_default();
 
         let data_file = data_path(dir, generation);
@@ -84,6 +88,7 @@ impl ThumbIndex {
         Ok(Self {
             dir: dir.to_path_buf(),
             thumb_max,
+            scoring_version,
             generation,
             entries,
             data,
@@ -102,11 +107,17 @@ impl ThumbIndex {
         self.entries.contains_key(name)
     }
 
-    pub fn lookup(&self, name: &str, stamp: FileStamp) -> Option<(u64, u32)> {
+    /// (offset, len, nota) si la entrada coincide con tamaño y mtime.
+    pub fn lookup(&self, name: &str, stamp: FileStamp) -> Option<(u64, u32, Score)> {
         self.entries
             .get(name)
             .filter(|e| e.stamp == stamp)
-            .map(|e| (e.offset, e.len))
+            .map(|e| (e.offset, e.len, e.score))
+    }
+
+    /// Nota guardada para `name`, sin validar tamaño ni mtime.
+    pub fn score_of(&self, name: &str) -> Option<Score> {
+        self.entries.get(name).map(|e| e.score)
     }
 
     pub fn read(&self, offset: u64, len: u32) -> io::Result<Vec<u8>> {
@@ -115,14 +126,27 @@ impl ThumbIndex {
         Ok(buf)
     }
 
-    pub fn insert(&mut self, name: &str, stamp: FileStamp, bytes: &[u8]) -> io::Result<()> {
+    pub fn insert(
+        &mut self,
+        name: &str,
+        stamp: FileStamp,
+        bytes: &[u8],
+        score: Score,
+    ) -> io::Result<()> {
         let len = u32::try_from(bytes.len())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "thumbnail too large"))?;
         let offset = self.data.seek(SeekFrom::End(0))?;
         self.data.write_all(bytes)?;
         self.data_len = offset + len as u64;
-        self.entries
-            .insert(name.to_string(), Entry { stamp, offset, len });
+        self.entries.insert(
+            name.to_string(),
+            Entry {
+                stamp,
+                offset,
+                len,
+                score,
+            },
+        );
         self.unsaved += 1;
         Ok(())
     }
@@ -163,7 +187,10 @@ impl ThumbIndex {
         };
 
         let tmp = self.dir.join("index.tmp");
-        fs::write(&tmp, encode_index(self.thumb_max, generation, &entries))?;
+        fs::write(
+            &tmp,
+            encode_index(self.thumb_max, self.scoring_version, generation, &entries),
+        )?;
         fs::rename(&tmp, self.dir.join("index.bin"))?;
 
         if let Some((out, len)) = data {
@@ -190,10 +217,16 @@ fn remove_other_generations(dir: &Path, keep: u32) {
     }
 }
 
-fn encode_index(thumb_max: u32, generation: u32, entries: &HashMap<String, Entry>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(16 + entries.len() * 64);
+fn encode_index(
+    thumb_max: u32,
+    scoring_version: u32,
+    generation: u32,
+    entries: &HashMap<String, Entry>,
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(20 + entries.len() * 80);
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&thumb_max.to_le_bytes());
+    out.extend_from_slice(&scoring_version.to_le_bytes());
     out.extend_from_slice(&generation.to_le_bytes());
     out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
     for (name, e) in entries {
@@ -204,15 +237,28 @@ fn encode_index(thumb_max: u32, generation: u32, entries: &HashMap<String, Entry
         out.extend_from_slice(&e.stamp.mtime_ns.to_le_bytes());
         out.extend_from_slice(&e.offset.to_le_bytes());
         out.extend_from_slice(&e.len.to_le_bytes());
+        let s = e.score;
+        for v in [
+            s.overall,
+            s.aesthetic.unwrap_or(f32::NAN),
+            s.sharpness,
+            s.exposure,
+        ] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
     }
     out
 }
 
-fn parse_index(bytes: &[u8], thumb_max: u32) -> Option<(u32, HashMap<String, Entry>)> {
+fn parse_index(
+    bytes: &[u8],
+    thumb_max: u32,
+    scoring_version: u32,
+) -> Option<(u32, HashMap<String, Entry>)> {
     let mut r = bytes;
     let mut magic = [0u8; 8];
     r.read_exact(&mut magic).ok()?;
-    if &magic != MAGIC || read_u32(&mut r)? != thumb_max {
+    if &magic != MAGIC || read_u32(&mut r)? != thumb_max || read_u32(&mut r)? != scoring_version {
         return None;
     }
     let generation = read_u32(&mut r)?;
@@ -230,6 +276,12 @@ fn parse_index(bytes: &[u8], thumb_max: u32) -> Option<(u32, HashMap<String, Ent
             },
             offset: read_u64(&mut r)?,
             len: read_u32(&mut r)?,
+            score: Score {
+                overall: read_f32(&mut r)?,
+                aesthetic: Some(read_f32(&mut r)?).filter(|v| !v.is_nan()),
+                sharpness: read_f32(&mut r)?,
+                exposure: read_f32(&mut r)?,
+            },
         };
         entries.insert(String::from_utf8(name).ok()?, entry);
     }
@@ -240,6 +292,10 @@ fn read_u32(r: &mut &[u8]) -> Option<u32> {
     let mut b = [0u8; 4];
     r.read_exact(&mut b).ok()?;
     Some(u32::from_le_bytes(b))
+}
+
+fn read_f32(r: &mut &[u8]) -> Option<f32> {
+    read_u32(r).map(f32::from_bits)
 }
 
 fn read_u64(r: &mut &[u8]) -> Option<u64> {
@@ -281,6 +337,13 @@ mod tests {
         dir
     }
 
+    const S: Score = Score {
+        overall: 7.5,
+        aesthetic: Some(5.5),
+        sharpness: 8.0,
+        exposure: 9.0,
+    };
+
     fn stamp(size: u64, mtime_ns: u64) -> FileStamp {
         FileStamp { size, mtime_ns }
     }
@@ -288,24 +351,44 @@ mod tests {
     #[test]
     fn insert_save_reopen_and_read_back() {
         let dir = temp_dir("roundtrip");
-        let mut index = ThumbIndex::open(&dir, 320).unwrap();
-        index.insert("a.jpg", stamp(10, 1), b"AAAA").unwrap();
-        index.insert("b.jpg", stamp(20, 2), b"BBBBBB").unwrap();
+        let mut index = ThumbIndex::open(&dir, 320, 1).unwrap();
+        index.insert("a.jpg", stamp(10, 1), b"AAAA", S).unwrap();
+        index.insert("b.jpg", stamp(20, 2), b"BBBBBB", S).unwrap();
         index.save().unwrap();
         drop(index);
 
-        let index = ThumbIndex::open(&dir, 320).unwrap();
+        let index = ThumbIndex::open(&dir, 320, 1).unwrap();
         assert_eq!(index.len(), 2);
-        let (off, len) = index.lookup("b.jpg", stamp(20, 2)).unwrap();
+        let (off, len, _) = index.lookup("b.jpg", stamp(20, 2)).unwrap();
         assert_eq!(index.read(off, len).unwrap(), b"BBBBBB");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn scores_roundtrip_including_missing_aesthetic() {
+        let dir = temp_dir("scores");
+        let no_model = Score {
+            aesthetic: None,
+            ..S
+        };
+        let mut index = ThumbIndex::open(&dir, 320, 1).unwrap();
+        index.insert("a.jpg", stamp(1, 1), b"A", S).unwrap();
+        index.insert("b.jpg", stamp(1, 1), b"B", no_model).unwrap();
+        index.save().unwrap();
+        drop(index);
+
+        let index = ThumbIndex::open(&dir, 320, 1).unwrap();
+        assert_eq!(index.lookup("a.jpg", stamp(1, 1)).unwrap().2, S);
+        assert_eq!(index.score_of("b.jpg"), Some(no_model));
+        assert_eq!(index.score_of("zzz.jpg"), None);
         fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn lookup_misses_when_file_changed() {
         let dir = temp_dir("stale");
-        let mut index = ThumbIndex::open(&dir, 320).unwrap();
-        index.insert("a.jpg", stamp(10, 1), b"A").unwrap();
+        let mut index = ThumbIndex::open(&dir, 320, 1).unwrap();
+        index.insert("a.jpg", stamp(10, 1), b"A", S).unwrap();
         assert!(index.lookup("a.jpg", stamp(11, 1)).is_none());
         assert!(index.lookup("a.jpg", stamp(10, 2)).is_none());
         assert!(index.lookup("other.jpg", stamp(10, 1)).is_none());
@@ -317,9 +400,9 @@ mod tests {
     #[test]
     fn unsaved_counts_inserts_until_save() {
         let dir = temp_dir("unsaved");
-        let mut index = ThumbIndex::open(&dir, 320).unwrap();
-        index.insert("a.jpg", stamp(1, 1), b"A").unwrap();
-        index.insert("b.jpg", stamp(1, 1), b"B").unwrap();
+        let mut index = ThumbIndex::open(&dir, 320, 1).unwrap();
+        index.insert("a.jpg", stamp(1, 1), b"A", S).unwrap();
+        index.insert("b.jpg", stamp(1, 1), b"B", S).unwrap();
         assert_eq!(index.unsaved(), 2);
         index.save().unwrap();
         assert_eq!(index.unsaved(), 0);
@@ -329,15 +412,24 @@ mod tests {
     #[test]
     fn different_thumb_size_or_corrupt_index_starts_empty() {
         let dir = temp_dir("corrupt");
-        let mut index = ThumbIndex::open(&dir, 320).unwrap();
-        index.insert("a.jpg", stamp(1, 1), b"A").unwrap();
+        let mut index = ThumbIndex::open(&dir, 320, 1).unwrap();
+        index.insert("a.jpg", stamp(1, 1), b"A", S).unwrap();
         index.save().unwrap();
         drop(index);
 
-        assert_eq!(ThumbIndex::open(&dir, 256).unwrap().len(), 0);
+        assert_eq!(ThumbIndex::open(&dir, 256, 1).unwrap().len(), 0);
+        let mut index = ThumbIndex::open(&dir, 320, 1).unwrap();
+        index.insert("a.jpg", stamp(1, 1), b"A", S).unwrap();
+        index.save().unwrap();
+        drop(index);
+        assert_eq!(
+            ThumbIndex::open(&dir, 320, 2).unwrap().len(),
+            0,
+            "otra versión de scoring"
+        );
 
         fs::write(dir.join("index.bin"), b"garbage").unwrap();
-        let index = ThumbIndex::open(&dir, 320).unwrap();
+        let index = ThumbIndex::open(&dir, 320, 1).unwrap();
         assert_eq!(index.len(), 0);
         assert_eq!(index.data_len(), 0);
         fs::remove_dir_all(dir).unwrap();
@@ -346,9 +438,9 @@ mod tests {
     #[test]
     fn entries_beyond_truncated_data_are_dropped() {
         let dir = temp_dir("truncated");
-        let mut index = ThumbIndex::open(&dir, 320).unwrap();
-        index.insert("a.jpg", stamp(1, 1), b"AAAA").unwrap();
-        index.insert("b.jpg", stamp(1, 1), b"BBBB").unwrap();
+        let mut index = ThumbIndex::open(&dir, 320, 1).unwrap();
+        index.insert("a.jpg", stamp(1, 1), b"AAAA", S).unwrap();
+        index.insert("b.jpg", stamp(1, 1), b"BBBB", S).unwrap();
         index.save().unwrap();
         drop(index);
 
@@ -358,7 +450,7 @@ mod tests {
             .unwrap()
             .set_len(6)
             .unwrap();
-        let index = ThumbIndex::open(&dir, 320).unwrap();
+        let index = ThumbIndex::open(&dir, 320, 1).unwrap();
         assert!(index.lookup("a.jpg", stamp(1, 1)).is_some());
         assert!(index.lookup("b.jpg", stamp(1, 1)).is_none());
         fs::remove_dir_all(dir).unwrap();
@@ -367,22 +459,22 @@ mod tests {
     #[test]
     fn save_compacts_when_most_data_is_garbage() {
         let dir = temp_dir("compact");
-        let mut index = ThumbIndex::open(&dir, 320).unwrap();
+        let mut index = ThumbIndex::open(&dir, 320, 1).unwrap();
         let big = vec![7u8; (COMPACT_MIN_BYTES / 4) as usize];
         for v in 0..5 {
-            index.insert("a.jpg", stamp(1, v), &big).unwrap();
+            index.insert("a.jpg", stamp(1, v), &big, S).unwrap();
         }
-        index.insert("b.jpg", stamp(1, 1), b"keep").unwrap();
+        index.insert("b.jpg", stamp(1, 1), b"keep", S).unwrap();
         assert!(index.data_len() > COMPACT_MIN_BYTES);
         index.save().unwrap();
 
         assert_eq!(index.data_len(), big.len() as u64 + 4);
-        let (off, len) = index.lookup("b.jpg", stamp(1, 1)).unwrap();
+        let (off, len, _) = index.lookup("b.jpg", stamp(1, 1)).unwrap();
         assert_eq!(index.read(off, len).unwrap(), b"keep");
-        let (off, len) = index.lookup("a.jpg", stamp(1, 4)).unwrap();
+        let (off, len, _) = index.lookup("a.jpg", stamp(1, 4)).unwrap();
         assert_eq!(index.read(off, len).unwrap(), big);
         drop(index);
-        let index = ThumbIndex::open(&dir, 320).unwrap();
+        let index = ThumbIndex::open(&dir, 320, 1).unwrap();
         assert_eq!(index.len(), 2);
         fs::remove_dir_all(dir).unwrap();
     }

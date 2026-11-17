@@ -112,6 +112,12 @@ impl Queue {
         }
     }
 
+    /// Mostrada pero sin indexar: deja de estar en curso y vuelve a quedar pendiente de `Index`.
+    pub fn release(&mut self, job: Job) {
+        self.in_flight.remove(&job.index());
+        self.wanted.remove(&job.index());
+    }
+
     #[cfg(test)]
     pub fn is_failed(&self, i: usize) -> bool {
         self.failed.get(i).copied().unwrap_or(false)
@@ -199,6 +205,16 @@ mod tests {
         assert_eq!(q.next(), None, "en curso");
         q.finish(Job::Index(0), true);
         assert_eq!(q.next(), Some(Job::Display(0)));
+    }
+
+    #[test]
+    fn released_display_job_stays_pending_for_indexing() {
+        let mut q = Queue::new(vec![false; 1]);
+        q.set_wanted([0]);
+        assert_eq!(q.next(), Some(Job::Display(0)));
+        q.release(Job::Display(0));
+        assert_eq!(q.progress(), (0, 1));
+        assert_eq!(q.next(), Some(Job::Index(0)), "falta indexar y calificar");
     }
 
     #[test]

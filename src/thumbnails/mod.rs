@@ -21,10 +21,11 @@ fn cache_dir_in(base: &Path, canonical_dir: &Path) -> PathBuf {
     base.join("thumbs").join(format!("{key:016x}"))
 }
 
-/// Hilos de generación: todos los núcleos menos uno para la UI.
+/// Hilos de generación: la mitad de los núcleos. El servicio corre desde que se abre la
+/// carpeta, así que deja margen para la carga de la imagen actual y la UI.
 pub fn worker_threads() -> usize {
     std::thread::available_parallelism()
-        .map(|n| n.get().saturating_sub(1))
+        .map(|n| n.get() / 2)
         .unwrap_or(2)
         .max(1)
 }

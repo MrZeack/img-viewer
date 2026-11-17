@@ -7,7 +7,7 @@
 //!
 //! La orientación EXIF se aplica aquí; HEIF ya la aplica libheif.
 use egui::ColorImage;
-use image::RgbImage;
+use image::{GrayImage, RgbImage};
 use std::borrow::Cow;
 use std::path::Path;
 
@@ -31,16 +31,48 @@ pub fn fit_size(w: u32, h: u32, max: u32) -> (u32, u32) {
     (fw, fh)
 }
 
-pub fn generate(path: &Path, max: u32) -> Result<RgbImage, String> {
+/// Lado mayor de la imagen de análisis (nitidez/exposición): la miniatura sola no
+/// distingue un foco ligeramente errado.
+pub const ANALYSIS_MAX: u32 = 800;
+
+pub struct Generated {
+    /// Miniatura orientada, lado mayor `max`.
+    pub thumb: RgbImage,
+    /// Escala de grises sin orientar, lado mayor ≤ `ANALYSIS_MAX`.
+    pub analysis: GrayImage,
+}
+
+pub fn generate(path: &Path, max: u32) -> Result<Generated, String> {
+    let (img, orientation) = decode_source(path, max.max(ANALYSIS_MAX))?;
+    let mid = shrink_to(img, ANALYSIS_MAX);
+    let analysis = image::imageops::grayscale(&mid);
+    let thumb = shrink_to(mid, max);
+    Ok(Generated {
+        thumb: apply_exif_orientation(thumb, orientation.unwrap_or(1)),
+        analysis,
+    })
+}
+
+/// Solo la miniatura, decodificando al tamaño mínimo: para mostrar cuanto antes.
+pub fn generate_thumb(path: &Path, max: u32) -> Result<RgbImage, String> {
+    let (img, orientation) = decode_source(path, max)?;
+    Ok(apply_exif_orientation(
+        shrink_to(img, max),
+        orientation.unwrap_or(1),
+    ))
+}
+
+/// Decodifica a un tamaño ≥ `decode_max` (si el formato lo permite) y devuelve la orientación EXIF.
+fn decode_source(path: &Path, decode_max: u32) -> Result<(RgbImage, Option<u32>), String> {
     let ext = path
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    let (img, orientation) = match ext.as_str() {
+    Ok(match ext.as_str() {
         "jpg" | "jpeg" => {
             let data = std::fs::read(path).map_err(|e| e.to_string())?;
             (
-                decode_jpeg_scaled(&data, max)?,
+                decode_jpeg_scaled(&data, decode_max)?,
                 container_orientation(&data),
             )
         }
@@ -48,25 +80,27 @@ pub fn generate(path: &Path, max: u32) -> Result<RgbImage, String> {
             let map = map_file(path)?;
             let (preview, orientation) =
                 raw_preview(&map).ok_or("RAW sin vista previa embebida")?;
-            (decode_jpeg_scaled(&preview, max)?, orientation)
+            (decode_jpeg_scaled(&preview, decode_max)?, orientation)
         }
         "hif" | "heic" => {
             let map = map_file(path)?;
-            (decode_heif(&map, max)?, None)
+            (decode_heif(&map, decode_max)?, None)
         }
         _ => {
             let data = std::fs::read(path).map_err(|e| e.to_string())?;
             let img = image::load_from_memory(&data).map_err(|e| e.to_string())?;
             (img.to_rgb8(), container_orientation(&data))
         }
-    };
+    })
+}
+
+fn shrink_to(img: RgbImage, max: u32) -> RgbImage {
     let (w, h) = fit_size(img.width(), img.height(), max);
-    let img = if (w, h) == img.dimensions() {
+    if (w, h) == img.dimensions() {
         img
     } else {
         image::imageops::thumbnail(&img, w, h)
-    };
-    Ok(apply_exif_orientation(img, orientation.unwrap_or(1)))
+    }
 }
 
 /// Vista previa JPEG embebida y orientación EXIF de un RAW.
@@ -290,8 +324,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("big.JPG");
         std::fs::write(&path, &jpeg).unwrap();
-        let thumb = generate(&path, 320).unwrap();
-        assert_eq!((thumb.width(), thumb.height()), (320, 213));
+        let generated = generate(&path, 320).unwrap();
+        assert_eq!(generated.thumb.dimensions(), (320, 213));
+        assert_eq!(generate_thumb(&path, 320).unwrap().dimensions(), (320, 213));
+        assert_eq!(
+            generated.analysis.dimensions(),
+            (ANALYSIS_MAX, 533),
+            "análisis a 800 px"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -342,8 +382,10 @@ mod tests {
             "canon-eos-r50-2025-08-08-canon-eos-r50-2025-08-08-img_8333-56f54f9a-56f54f9a.cr3",
             "IMG_8382.HIF",
         ] {
-            let thumb = generate(&sample(name), 320).unwrap_or_else(|e| panic!("{name}: {e}"));
-            assert_eq!(long_edge(&thumb), 320, "{name}");
+            let generated = generate(&sample(name), 320).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(long_edge(&generated.thumb), 320, "{name}");
+            let (w, h) = generated.analysis.dimensions();
+            assert_eq!(w.max(h), ANALYSIS_MAX, "{name}");
         }
     }
 
@@ -390,7 +432,7 @@ mod tests {
         for f in &files {
             let ext = f.extension().unwrap().to_string_lossy().to_lowercase();
             let t = std::time::Instant::now();
-            let ok = generate(f, 320).and_then(|img| encode_jpeg(&img)).is_ok();
+            let ok = generate(f, 384).and_then(|g| encode_jpeg(&g.thumb)).is_ok();
             let e = by_ext.entry(ext).or_default();
             e.0 += ok as u32;
             e.1 += t.elapsed();

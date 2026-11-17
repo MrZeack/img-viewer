@@ -6,6 +6,8 @@ pub mod grid;
 pub mod grid_layout;
 #[path = "app/input.rs"]
 pub mod input;
+#[path = "app/rating.rs"]
+pub mod rating;
 #[path = "app/state.rs"]
 pub mod state;
 #[path = "app/tag_actions.rs"]

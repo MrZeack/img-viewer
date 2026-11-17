@@ -2,9 +2,10 @@
 //!
 //! La lista de archivos puede cambiar (mover, deshacer) sin reiniciar los workers: `set_files`
 //! reemplaza la cola y sube la época; los trabajos de la época anterior se descartan al terminar.
-use super::generate::{decode_thumb, encode_jpeg, generate, to_color_image};
+use super::generate::{decode_thumb, encode_jpeg, generate, generate_thumb, to_color_image};
 use super::index::{FileStamp, ThumbIndex};
 use super::queue::{Job, Queue};
+use crate::scoring::{self, Score, SCORING_VERSION};
 use egui::ColorImage;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,11 +16,25 @@ use std::thread::JoinHandle;
 /// Cada cuántas miniaturas nuevas se persiste `index.bin`.
 const SAVE_EVERY: usize = 200;
 
+/// Resultado de un trabajo. `Display`: imagen y nota, o ambos `None` si falló.
+/// Indexado de una foto nueva: solo nota.
 #[derive(Debug)]
 pub struct ThumbResult {
     pub path: PathBuf,
-    /// `None` si no se pudo generar.
     pub image: Option<ColorImage>,
+    pub score: Option<Score>,
+}
+
+enum Outcome {
+    /// En el índice: imagen (si se pidió) y nota guardadas.
+    Cached {
+        image: Option<ColorImage>,
+        score: Score,
+    },
+    /// Visible y sin caché: solo la miniatura rápida; la nota llega con el `Index` posterior.
+    Shown(ColorImage),
+    /// Generada, calificada y guardada en el índice.
+    Indexed(Score),
 }
 
 pub struct ThumbnailService {
@@ -64,13 +79,16 @@ impl ThumbnailService {
         threads: usize,
         repaint: Option<egui::Context>,
     ) -> Self {
-        let index = cache_dir.and_then(|dir| match ThumbIndex::open(&dir, thumb_max) {
-            Ok(index) => Some(index),
-            Err(e) => {
-                eprintln!("Thumbnail cache disabled ({}): {e}", dir.display());
-                None
-            }
-        });
+        let index =
+            cache_dir.and_then(
+                |dir| match ThumbIndex::open(&dir, thumb_max, SCORING_VERSION) {
+                    Ok(index) => Some(index),
+                    Err(e) => {
+                        eprintln!("Thumbnail cache disabled ({}): {e}", dir.display());
+                        None
+                    }
+                },
+            );
         let mut shared = Shared {
             thumb_max,
             state: Mutex::new(State {
@@ -128,6 +146,19 @@ impl ThumbnailService {
         self.shared.work.notify_all();
     }
 
+    /// Notas ya guardadas en el índice para la lista actual (por nombre; se revalidan al regenerar).
+    pub fn cached_scores(&self) -> Vec<(PathBuf, Score)> {
+        let Some(index) = &self.shared.index else {
+            return Vec::new();
+        };
+        let files = lock(&self.shared.state).files.clone();
+        let index = lock(index);
+        files
+            .iter()
+            .filter_map(|f| index.score_of(&file_key(f)).map(|s| (f.clone(), s)))
+            .collect()
+    }
+
     pub fn try_recv(&self) -> Option<ThumbResult> {
         self.results.try_recv().ok()
     }
@@ -182,8 +213,8 @@ fn worker(shared: &Shared, tx: &Sender<ThumbResult>) {
             }
         };
 
-        // Un archivo malformado no debe tumbar el worker (release usa panic = "unwind").
         let display = matches!(job, Job::Display(_));
+        // Un archivo malformado no debe tumbar el worker (release usa panic = "unwind").
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             process(shared, &path, display)
         }))
@@ -191,56 +222,76 @@ fn worker(shared: &Shared, tx: &Sender<ThumbResult>) {
 
         let mut state = lock(&shared.state);
         if state.epoch == epoch {
-            state.queue.finish(job, result.is_ok());
+            match &result {
+                Ok(Outcome::Shown(_)) => state.queue.release(job),
+                other => state.queue.finish(job, other.is_ok()),
+            }
         }
         drop(state);
 
-        if display {
-            let image = result.ok().flatten();
-            if tx.send(ThumbResult { path, image }).is_err() {
-                return;
-            }
-            if let Some(ctx) = &shared.repaint {
-                ctx.request_repaint();
-            }
+        let (image, score) = match result {
+            Ok(Outcome::Cached { image, score }) if display => (image, Some(score)),
+            Ok(Outcome::Cached { .. }) => continue,
+            Ok(Outcome::Shown(image)) => (Some(image), None),
+            Ok(Outcome::Indexed(score)) => (None, Some(score)),
+            Err(_) if display => (None, None),
+            Err(_) => continue,
+        };
+        if tx.send(ThumbResult { path, image, score }).is_err() {
+            return;
+        }
+        if let Some(ctx) = &shared.repaint {
+            ctx.request_repaint();
         }
     }
 }
 
-/// Devuelve la imagen solo si `display`; si no, solo asegura la entrada en disco.
-fn process(shared: &Shared, path: &Path, display: bool) -> Result<Option<ColorImage>, String> {
+/// Lee del índice si el archivo no cambió. Sin caché: si `display`, solo la miniatura rápida
+/// (la foto queda pendiente de indexar); si no, genera, califica y guarda.
+fn process(shared: &Shared, path: &Path, display: bool) -> Result<Outcome, String> {
     let key = file_key(path);
     let stamp = FileStamp::of(path).map_err(|e| e.to_string())?;
 
     if let Some(index) = &shared.index {
         let cached = {
             let index = lock(index);
-            index
-                .lookup(&key, stamp)
-                .and_then(|(offset, len)| index.read(offset, len).ok())
+            index.lookup(&key, stamp).map(|(offset, len, score)| {
+                let bytes = display.then(|| index.read(offset, len).ok()).flatten();
+                (bytes, score)
+            })
         };
-        if let Some(bytes) = cached {
-            if !display {
-                return Ok(None);
-            }
+        match cached {
+            Some((_, score)) if !display => return Ok(Outcome::Cached { image: None, score }),
             // Un blob dañado se regenera abajo.
-            if let Ok(image) = decode_thumb(&bytes) {
-                return Ok(Some(image));
+            Some((Some(bytes), score)) => {
+                if let Ok(image) = decode_thumb(&bytes) {
+                    return Ok(Outcome::Cached {
+                        image: Some(image),
+                        score,
+                    });
+                }
             }
+            _ => {}
         }
     }
 
-    let rgb = generate(path, shared.thumb_max)?;
+    if display {
+        let thumb = generate_thumb(path, shared.thumb_max)?;
+        return Ok(Outcome::Shown(to_color_image(&thumb)));
+    }
+
+    let generated = generate(path, shared.thumb_max)?;
+    let score = scoring::score(&generated.thumb, &generated.analysis);
     if let Some(index) = &shared.index {
-        let jpeg = encode_jpeg(&rgb)?;
+        let jpeg = encode_jpeg(&generated.thumb)?;
         let mut index = lock(index);
-        if let Err(e) = index.insert(&key, stamp, &jpeg) {
+        if let Err(e) = index.insert(&key, stamp, &jpeg, score) {
             eprintln!("Failed to store thumbnail for {}: {e}", path.display());
         } else if index.unsaved() >= SAVE_EVERY {
             let _ = index.save();
         }
     }
-    Ok(display.then(|| to_color_image(&rgb)))
+    Ok(Outcome::Indexed(score))
 }
 
 #[cfg(test)]
@@ -273,11 +324,14 @@ mod tests {
         }
     }
 
+    /// Resultados de trabajos `Display`: imagen o fallo (los de indexado solo traen nota).
     fn collect(service: &ThumbnailService, expected: usize) -> Vec<ThumbResult> {
         let mut out = Vec::new();
         wait_until(service, |s| {
             while let Some(r) = s.try_recv() {
-                out.push(r);
+                if r.image.is_some() || r.score.is_none() {
+                    out.push(r);
+                }
             }
             out.len() >= expected
         });
@@ -301,16 +355,49 @@ mod tests {
     }
 
     #[test]
+    fn fresh_thumbnail_arrives_before_its_score() {
+        // Con un hilo y foco inicial en 0, el worker puede indexar img0 antes de `set_view`;
+        // img1 solo se procesa como `Display`.
+        let (root, files) = setup("early", 2);
+        let service =
+            ThumbnailService::start(files[..2].to_vec(), Some(root.join("cache")), 64, 1, None);
+        service.set_view(1, [1]);
+        let mut messages = Vec::new();
+        wait_until(&service, |s| {
+            messages.extend(std::iter::from_fn(|| s.try_recv()));
+            messages
+                .iter()
+                .any(|m| m.path == files[1] && m.score.is_some())
+        });
+        let img1: Vec<_> = messages.iter().filter(|m| m.path == files[1]).collect();
+        assert!(
+            img1[0].image.is_some() && img1[0].score.is_none(),
+            "imagen primero"
+        );
+        assert!(img1
+            .iter()
+            .any(|m| m.score.is_some_and(|s| (1.0..=10.0).contains(&s.overall))));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn whole_folder_is_indexed_in_background_and_reused_on_restart() {
         let (root, files) = setup("restart", 4);
         let cache = root.join("cache");
         {
             let service = ThumbnailService::start(files.clone(), Some(cache.clone()), 64, 2, None);
             wait_until(&service, |s| s.progress() == (5, 5));
-            assert!(service.try_recv().is_none(), "indexar no envía imágenes");
+            let indexed: Vec<_> = std::iter::from_fn(|| service.try_recv()).collect();
+            assert_eq!(indexed.len(), 4, "una nota por archivo válido");
+            assert!(indexed
+                .iter()
+                .all(|r| r.image.is_none() && r.score.is_some()));
         }
-        let service = ThumbnailService::start(files, Some(cache.clone()), 64, 2, None);
+        let service = ThumbnailService::start(files.clone(), Some(cache.clone()), 64, 2, None);
         assert_eq!(service.progress().0, 4, "las 4 válidas ya están indexadas");
+        let cached = service.cached_scores();
+        assert_eq!(cached.len(), 4);
+        assert!(cached.iter().all(|(p, _)| files.contains(p)));
         service.set_view(0, [2]);
         let results = collect(&service, 1);
         assert!(results[0].path.ends_with("img2.jpg"));

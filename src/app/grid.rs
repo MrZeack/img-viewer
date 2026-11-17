@@ -20,6 +20,8 @@ pub(crate) struct GridState {
     service_dir: PathBuf,
     service_files: Vec<PathBuf>,
     textures: HashMap<PathBuf, TextureHandle>,
+    /// Notas conocidas (del índice o recién calculadas).
+    pub(crate) scores: HashMap<PathBuf, crate::scoring::Score>,
     failed: HashSet<PathBuf>,
     pub(crate) cell: f32,
     pub(crate) cols: usize,
@@ -36,6 +38,7 @@ impl Default for GridState {
             service_dir: PathBuf::new(),
             service_files: Vec::new(),
             textures: HashMap::new(),
+            scores: HashMap::new(),
             failed: HashSet::new(),
             cell: DEFAULT_CELL,
             cols: 1,
@@ -134,13 +137,15 @@ impl ImageViewerApp {
         false
     }
 
-    /// Arranca o actualiza el servicio para la carpeta y lista actuales.
-    fn sync_grid_service(&mut self, ctx: &Context) {
+    /// Arranca o actualiza el servicio para la carpeta y lista actuales. Corre en ambos modos:
+    /// indexa y califica en segundo plano aunque no se muestre la cuadrícula.
+    pub(crate) fn sync_thumbnail_service(&mut self, ctx: &Context) {
         let grid = &mut self.grid;
         if grid.service.is_none() || grid.service_dir != self.current_dir {
             grid.service = None; // detiene los workers de la carpeta anterior
             grid.textures.clear();
             grid.failed.clear();
+            grid.scores.clear();
             grid.service_dir = self.current_dir.clone();
             grid.service_files = self.image_files.clone();
             grid.service = Some(ThumbnailService::start(
@@ -150,6 +155,9 @@ impl ImageViewerApp {
                 worker_threads(),
                 Some(ctx.clone()),
             ));
+            if let Some(service) = &grid.service {
+                grid.scores.extend(service.cached_scores());
+            }
             grid.last_request = None;
         } else if grid.service_files != self.image_files {
             grid.service_files = self.image_files.clone();
@@ -160,7 +168,7 @@ impl ImageViewerApp {
         }
     }
 
-    fn receive_thumbnails(&mut self, ctx: &Context) {
+    pub(crate) fn receive_thumbnails(&mut self, ctx: &Context) {
         let Some(service) = &self.grid.service else {
             return;
         };
@@ -168,15 +176,19 @@ impl ImageViewerApp {
             let Some(result) = service.try_recv() else {
                 return;
             };
-            match result.image {
-                Some(image) => {
+            if let Some(score) = result.score {
+                self.grid.scores.insert(result.path.clone(), score);
+            }
+            match (result.image, result.score) {
+                (Some(image), _) => {
                     let name = format!("thumb:{}", result.path.display());
                     let texture = ctx.load_texture(name, image, egui::TextureOptions::LINEAR);
                     self.grid.textures.insert(result.path, texture);
                 }
-                None => {
+                (None, None) => {
                     self.grid.failed.insert(result.path);
                 }
+                (None, Some(_)) => {}
             }
         }
         // Se alcanzó el límite del frame: quedan resultados en el canal.
@@ -184,9 +196,6 @@ impl ImageViewerApp {
     }
 
     pub(crate) fn show_grid_view(&mut self, ui: &mut egui::Ui, ctx: &Context) {
-        self.sync_grid_service(ctx);
-        self.receive_thumbnails(ctx);
-
         let zoom = ctx.input(|i| i.zoom_delta());
         if zoom != 1.0 {
             self.grid.zoom(zoom);
@@ -298,6 +307,15 @@ impl ImageViewerApp {
                 egui::FontId::proportional(13.0),
                 Color32::BLACK,
             );
+        }
+        if let Some(score) = self.grid.scores.get(path) {
+            let text = format!("{:.1}", score.overall);
+            let pos = rect.right_bottom() - Vec2::new(6.0, 6.0);
+            let galley =
+                painter.layout_no_wrap(text, egui::FontId::proportional(13.0), Color32::BLACK);
+            let badge = Rect::from_min_max(pos - galley.size() - Vec2::new(8.0, 4.0), pos);
+            painter.rect_filled(badge, 4.0, super::rating::score_color(score.overall));
+            painter.galley(badge.min + Vec2::new(4.0, 2.0), galley, Color32::BLACK);
         }
         if i == self.current_index {
             painter.rect_stroke(

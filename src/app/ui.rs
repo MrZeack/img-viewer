@@ -19,6 +19,8 @@ impl eframe::App for ImageViewerApp {
 
         // Process events
         self.process_events(ctx);
+        self.sync_thumbnail_service(ctx);
+        self.receive_thumbnails(ctx);
 
         // Periodic cache cleanup (every 30 seconds)
         let now = Instant::now();
@@ -52,6 +54,7 @@ impl eframe::App for ImageViewerApp {
                                     .unwrap_or_default();
                             self.current_index = 0;
                             self.tags.clear_assignments();
+                            self.sort_by_score = false;
                             self.last_moved = None;
                             self.current_image = None;
                             self.current_metadata = None;
@@ -108,11 +111,15 @@ impl eframe::App for ImageViewerApp {
                         status_text.push_str(&format!(" - Tag {}: {}", slot, name));
                     }
 
-                    if self.show_grid {
-                        if let Some((done, total)) = self.grid.progress() {
-                            if done < total {
-                                status_text.push_str(&format!(" - Miniaturas: {done}/{total}"));
-                            }
+                    if let Some(score) = self.current_score() {
+                        status_text.push_str(&format!(" - Nota: {:.1}", score.overall));
+                    }
+                    if self.sort_by_score {
+                        status_text.push_str(" - Orden: nota");
+                    }
+                    if let Some((done, total)) = self.grid.progress() {
+                        if done < total {
+                            status_text.push_str(&format!(" - Calificando: {done}/{total}"));
                         }
                     }
 
@@ -125,10 +132,10 @@ impl eframe::App for ImageViewerApp {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.show_grid {
-                        ui.label("Flechas/RePág/AvPág: Mover | Enter/G/Esc/Doble clic: Abrir | +/-/Pinch: Tamaño | L/W/D/U | 1-9/0: Tag | M: Mover tags");
+                        ui.label("Flechas/RePág/AvPág: Mover | Enter/G/Esc/Doble clic: Abrir | +/-/Pinch: Tamaño | L/W/D/U | 1-9/0: Tag | M: Mover tags | S: Orden nota/fecha");
                         return;
                     }
-                    ui.label("G: Cuadrícula | LEFT/RIGHT: Navigate | Wheel: Zoom | L: Like | W: Worse | D: Delete | U: Undo | C: Composición | Shift+C: Off | F: Focus | H: Calidad | UP/DOWN: Tipo | R/Shift+R: Rotate | 1-9: Tag | 0: Quitar tag | T: Tags | M: Mover tags");
+                    ui.label("G: Cuadrícula | LEFT/RIGHT: Navigate | Wheel: Zoom | L: Like | W: Worse | D: Delete | U: Undo | C: Composición | Shift+C: Off | F: Focus | H: Calidad | UP/DOWN: Tipo | R/Shift+R: Rotate | 1-9: Tag | 0: Quitar tag | T: Tags | M: Mover tags | S: Orden nota/fecha");
                 });
             });
         });
@@ -149,6 +156,35 @@ impl eframe::App for ImageViewerApp {
                             }
                         });
                     }
+
+                    ui.group(|ui| {
+                        ui.strong("CALIFICACIÓN");
+                        match self.current_score() {
+                            Some(score) => {
+                                ui.label(
+                                    egui::RichText::new(format!("{:.1} / 10", score.overall))
+                                        .size(22.0)
+                                        .color(super::rating::score_color(score.overall)),
+                                );
+                                egui::Grid::new("score_grid").show(ui, |ui| {
+                                    ui.label("Estética (NIMA):");
+                                    ui.label(
+                                        score.aesthetic.map_or("—".into(), |a| format!("{a:.2}")),
+                                    );
+                                    ui.end_row();
+                                    ui.label("Nitidez:");
+                                    ui.label(format!("{:.1}", score.sharpness));
+                                    ui.end_row();
+                                    ui.label("Exposición:");
+                                    ui.label(format!("{:.1}", score.exposure));
+                                    ui.end_row();
+                                });
+                            }
+                            None => {
+                                ui.label("Calculando…");
+                            }
+                        }
+                    });
 
                     ui.heading("METADATOS");
                     ui.separator();

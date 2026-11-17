@@ -61,9 +61,18 @@ Release: `make bump`, then `git push origin main && git push origin vX.Y.Z`. No 
 - **G** : Toggle the thumbnail grid (Enter, Esc or double-click opens the selected image)
 - **Arrows / PageUp / PageDown / Home / End** : Move the selection
 - **+ / - / pinch** : Thumbnail size
-- **L/W/D/U, 1-9, 0, M** : Work on the selected image as in single view
+- **L/W/D/U, 1-9, 0, M, S** : Work on the selected image as in single view
 
 Thumbnails are generated in the background (visible first, then the rest of the folder) and stored in an index under the user cache directory (`~/Library/Caches/fyi.voza.img-viewer/thumbs/` on macOS, `~/.cache/img-viewer/thumbs/` on Linux). Reopening a folder reuses it; changed files are regenerated. Deleting that directory is safe.
+
+### Automatic Rating
+Every photo gets a 1-10 score in the background (status bar, sidebar breakdown, grid badge). **S** sorts by score / by date.
+
+- **Aesthetic:** NIMA (MobileNet trained on the AVA dataset) on the thumbnail, embedded in the binary (`models/`, Apache-2.0, see `models/NOTICE`).
+- **Sharpness:** Laplacian variance of the sharpest blocks of an 800 px version, so a blurred background does not penalize an in-focus subject.
+- **Exposure:** share of clipped highlights, crushed shadows and mean brightness.
+
+The score is the aesthetic mean stretched to the full scale, minus penalties for low sharpness or exposure. Calibrated on 309 Sony ARW files; it reflects generic AVA taste, and the exposure check penalizes intentionally low-key photos. Scores are cached with the thumbnails and recomputed when the scoring version changes.
 
 ### Advanced Options
 ```bash

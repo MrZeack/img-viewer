@@ -65,6 +65,8 @@ pub struct ImageViewerApp {
 
     /// Grid (thumbnail) view instead of the single image
     pub(crate) show_grid: bool,
+    /// Lista ordenada por nota (S) en lugar de por fecha
+    pub(crate) sort_by_score: bool,
     pub(crate) grid: super::grid::GridState,
 
     /// Last move, for undo (U)
@@ -291,6 +293,7 @@ pub(crate) fn test_app(files: Vec<PathBuf>, current_index: usize) -> ImageViewer
         tags: Default::default(),
         tag_modal: None,
         show_grid: false,
+        sort_by_score: false,
         grid: Default::default(),
         last_moved: None,
         last_cache_cleanup: Instant::now(),

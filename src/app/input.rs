@@ -11,7 +11,9 @@ impl ImageViewerApp {
             return;
         }
         if self.show_grid {
-            if !self.handle_grid_keys(ctx) {
+            if ctx.input(|i| i.key_pressed(Key::S)) {
+                self.toggle_score_sort();
+            } else if !self.handle_grid_keys(ctx) {
                 self.handle_move_keys(ctx);
             }
             self.handle_tag_keys(ctx);
@@ -20,6 +22,8 @@ impl ImageViewerApp {
 
         if ctx.input(|i| i.key_pressed(Key::G)) {
             self.open_grid();
+        } else if ctx.input(|i| i.key_pressed(Key::S)) {
+            self.toggle_score_sort();
         } else if ctx.input(|i| i.key_pressed(Key::ArrowLeft)) {
             self.previous_image(ctx);
         } else if ctx.input(|i| i.key_pressed(Key::ArrowRight)) {
