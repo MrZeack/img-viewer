@@ -2,6 +2,8 @@
 # REL-2: make bump falla sin tocar archivos ante precondiciones inválidas
 # y, en el caso válido, crea solo el commit de release y el tag anotado.
 set -euo pipefail
+# Corre dentro de `make bump TYPE=… | VERSION=…`: no heredar los parámetros del bump real.
+unset TYPE VERSION CHECK_CMD
 
 ROOT=$(git rev-parse --show-toplevel)
 BUMP="$ROOT/scripts/bump.sh"
