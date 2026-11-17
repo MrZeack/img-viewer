@@ -81,14 +81,20 @@ impl Default for PerformanceConfig {
 /// Configuration for browsing settings
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct BrowsingConfig {
-    /// Whether to sort images by newest first
-    pub sort_newest_first: bool,
+    /// Display order: date_asc (default), date_desc, score_desc, score_asc.
+    /// Replaces the legacy `sort_newest_first`, which is ignored.
+    #[serde(default = "default_sort_order")]
+    pub sort_order: String,
+}
+
+fn default_sort_order() -> String {
+    "date_asc".to_string()
 }
 
 impl Default for BrowsingConfig {
     fn default() -> Self {
         Self {
-            sort_newest_first: true,
+            sort_order: default_sort_order(),
         }
     }
 }
@@ -284,14 +290,18 @@ mod tests {
         assert_eq!(migrated.cache.metadata_capacity, 88);
         assert_eq!(migrated.performance.loader_threads, 8);
         assert_eq!(migrated.performance.max_cached_dimension, 3000);
-        assert!(!migrated.browsing.sort_newest_first);
+        assert_eq!(
+            migrated.browsing.sort_order, "date_asc",
+            "el flag legado se ignora"
+        );
         assert!(!migrated.view.show_composition);
         assert_eq!(migrated.view.composition_type, "RuleOfThirds");
     }
 
     #[test]
     fn test_tag_names_persist_and_default_to_empty() {
-        let migrated = migrate_config_str("[browsing]\nsort_newest_first = true\n").unwrap();
+        let migrated = migrate_config_str("[browsing]\nsort_order = \"score_desc\"\n").unwrap();
+        assert_eq!(migrated.browsing.sort_order, "score_desc");
         assert!(migrated.tags.names.is_empty());
 
         let mut config = Config::default();

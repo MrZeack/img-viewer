@@ -2,7 +2,7 @@ use super::state::ImageViewerApp;
 use crate::cache::{create_image_cache, create_metadata_cache, CompositionCache};
 use crate::config::Config;
 use crate::event::{EventBus, ViewerEvent};
-use crate::image_loader::{get_image_files, ImageLoader, ImagePreloader};
+use crate::image_loader::{ImageLoader, ImagePreloader};
 use crate::metadata_loader::MetadataLoader;
 use eframe::egui::Context;
 use std::path::PathBuf;
@@ -18,14 +18,6 @@ impl ImageViewerApp {
             eprintln!("Warning: Could not get current directory: {}", err);
             PathBuf::from(".")
         });
-        let image_files = match get_image_files(&current_dir, config.browsing.sort_newest_first) {
-            Ok(files) => files,
-            Err(e) => {
-                eprintln!("Failed to get image files: {}", e);
-                Vec::new()
-            }
-        };
-
         let image_cache = create_image_cache(config.cache.image_capacity);
         let image_loader = ImageLoader::new(config.performance.loader_threads, event_bus.clone());
         let preview_dim = config.performance.max_cached_dimension.min(1024);
@@ -39,7 +31,7 @@ impl ImageViewerApp {
 
         let mut app = Self {
             current_dir,
-            image_files,
+            image_files: Vec::new(),
             current_index: 0,
             current_image: None,
             zoom_factor: 1.0,
@@ -63,14 +55,15 @@ impl ImageViewerApp {
             tags: super::tags::TagStore::from_config(&config.tags.names),
             tag_modal: None,
             show_grid: false,
-            sort_by_score: false,
+            sort_order: super::sorting::SortOrder::from_config(&config.browsing.sort_order),
+            mtimes: std::collections::HashMap::new(),
+            folder_load: None,
             grid: Default::default(),
             last_moved: None,
             last_cache_cleanup: Instant::now(),
             last_distant_cleanup: Instant::now(),
             event_receiver,
             should_close: false,
-            sort_newest_first: config.browsing.sort_newest_first,
             max_cached_dimension: config.performance.max_cached_dimension,
             rotation: 0,
             rotation_manually_set: false,
@@ -79,10 +72,8 @@ impl ImageViewerApp {
             config,
         };
 
-        if !app.image_files.is_empty() {
-            app.load_current_image(&cc.egui_ctx);
-        }
-
+        let dir = app.current_dir.clone();
+        app.start_folder_load(dir);
         app
     }
 

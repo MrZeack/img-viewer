@@ -65,8 +65,12 @@ pub struct ImageViewerApp {
 
     /// Grid (thumbnail) view instead of the single image
     pub(crate) show_grid: bool,
-    /// Lista ordenada por nota (S) en lugar de por fecha
-    pub(crate) sort_by_score: bool,
+    /// Orden de visualización (S lo recorre)
+    pub(crate) sort_order: super::sorting::SortOrder,
+    /// Fecha de modificación de cada archivo, leída al escanear la carpeta
+    pub(crate) mtimes: HashMap<PathBuf, std::time::SystemTime>,
+    /// Escaneo de carpeta en curso
+    pub(crate) folder_load: Option<super::folder_load::FolderLoad>,
     pub(crate) grid: super::grid::GridState,
 
     /// Last move, for undo (U)
@@ -82,9 +86,6 @@ pub struct ImageViewerApp {
 
     /// Whether the application should close
     pub(crate) should_close: bool,
-
-    /// Whether to sort images by newest first
-    pub(crate) sort_newest_first: bool,
 
     /// Maximum cached dimension for performance
     pub(crate) max_cached_dimension: u32,
@@ -293,14 +294,15 @@ pub(crate) fn test_app(files: Vec<PathBuf>, current_index: usize) -> ImageViewer
         tags: Default::default(),
         tag_modal: None,
         show_grid: false,
-        sort_by_score: false,
+        sort_order: Default::default(),
+        mtimes: HashMap::new(),
+        folder_load: None,
         grid: Default::default(),
         last_moved: None,
         last_cache_cleanup: Instant::now(),
         last_distant_cleanup: Instant::now(),
         event_receiver: rx,
         should_close: false,
-        sort_newest_first: true,
         max_cached_dimension: 1024,
         rotation: 0,
         rotation_manually_set: false,

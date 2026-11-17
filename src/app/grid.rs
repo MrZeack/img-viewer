@@ -29,6 +29,8 @@ pub(crate) struct GridState {
     visible_rows: Range<usize>,
     last_request: Option<(usize, Range<usize>, usize, usize)>,
     pub(crate) scroll_to_selected: bool,
+    /// Orden por nota aplicado con fotos aún sin calificar: reordenar al terminar.
+    pub(crate) resort_pending: bool,
 }
 
 impl Default for GridState {
@@ -46,6 +48,7 @@ impl Default for GridState {
             visible_rows: 0..0,
             last_request: None,
             scroll_to_selected: true,
+            resort_pending: false,
         }
     }
 }
@@ -140,6 +143,9 @@ impl ImageViewerApp {
     /// Arranca o actualiza el servicio para la carpeta y lista actuales. Corre en ambos modos:
     /// indexa y califica en segundo plano aunque no se muestre la cuadrícula.
     pub(crate) fn sync_thumbnail_service(&mut self, ctx: &Context) {
+        if self.is_loading() {
+            return;
+        }
         let grid = &mut self.grid;
         if grid.service.is_none() || grid.service_dir != self.current_dir {
             grid.service = None; // detiene los workers de la carpeta anterior
@@ -159,10 +165,14 @@ impl ImageViewerApp {
                 grid.scores.extend(service.cached_scores());
             }
             grid.last_request = None;
+            if self.sort_order.by_score() {
+                self.apply_sort();
+            }
         } else if grid.service_files != self.image_files {
             grid.service_files = self.image_files.clone();
             if let Some(service) = &grid.service {
                 service.set_files(self.image_files.clone());
+                grid.scores.extend(service.cached_scores());
             }
             grid.last_request = None;
         }

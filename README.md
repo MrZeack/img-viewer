@@ -57,6 +57,11 @@ Release: `make bump`, then `git push origin main && git push origin vX.Y.Z`. No 
 - **M** : Move tagged images to `<folder>/<tag name>/` (U undoes the whole batch; existing files are skipped)
 - **Esc** : Exit
 
+### Display Order
+**S** (or the *Orden* menu) cycles through: date ascending (default, oldest first), date descending, score descending and score ascending. Unscored photos go last, by date; the list is re-sorted once when scoring finishes. The choice is saved as `browsing.sort_order` in `config.toml` (the old `sort_newest_first` is ignored).
+
+The folder is scanned in the background; a spinner shows progress so a large or slow folder does not look frozen.
+
 ### Grid View
 - **G** : Toggle the thumbnail grid (Enter, Esc or double-click opens the selected image)
 - **Arrows / PageUp / PageDown / Home / End** : Move the selection
@@ -66,7 +71,7 @@ Release: `make bump`, then `git push origin main && git push origin vX.Y.Z`. No 
 Thumbnails are generated in the background (visible first, then the rest of the folder) and stored in an index under the user cache directory (`~/Library/Caches/fyi.voza.img-viewer/thumbs/` on macOS, `~/.cache/img-viewer/thumbs/` on Linux). Reopening a folder reuses it; changed files are regenerated. Deleting that directory is safe.
 
 ### Automatic Rating
-Every photo gets a 1-10 score in the background (status bar, sidebar breakdown, grid badge). **S** sorts by score / by date.
+Every photo gets a 1-10 score in the background (status bar, sidebar breakdown, grid badge).
 
 - **Aesthetic:** NIMA (MobileNet trained on the AVA dataset) on the thumbnail, embedded in the binary (`models/`, Apache-2.0, see `models/NOTICE`).
 - **Sharpness:** Laplacian variance of the sharpest blocks of an 800 px version, so a blurred background does not penalize an in-focus subject.

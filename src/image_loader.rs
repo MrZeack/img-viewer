@@ -368,55 +368,54 @@ fn dynamic_image_to_color_image(img: &DynamicImage) -> ColorImage {
     }
 }
 
-pub fn get_image_files(
+/// Archivos de imagen de `dir` con su fecha de modificación, sin ordenar.
+/// `found` cuenta los encontrados, para mostrar progreso mientras se escanea.
+pub fn scan_image_files(
     dir: &Path,
-    newest_first: bool,
-) -> Result<Vec<std::path::PathBuf>, AppError> {
+    found: Option<&std::sync::atomic::AtomicUsize>,
+) -> Result<Vec<(PathBuf, std::time::SystemTime)>, AppError> {
     let mut files = Vec::new();
-
-    if dir.is_dir() {
-        let dir_entries = std::fs::read_dir(dir).map_err(|e| {
-            AppError::FileSystemError(format!("Failed to read directory {}: {}", dir.display(), e))
+    if !dir.is_dir() {
+        return Ok(files);
+    }
+    let dir_entries = std::fs::read_dir(dir).map_err(|e| {
+        AppError::FileSystemError(format!("Failed to read directory {}: {}", dir.display(), e))
+    })?;
+    for entry in dir_entries {
+        let entry = entry.map_err(|e| {
+            AppError::FileSystemError(format!("Failed to read directory entry: {}", e))
         })?;
-
-        for entry in dir_entries {
-            let entry = entry.map_err(|e| {
-                AppError::FileSystemError(format!("Failed to read directory entry: {}", e))
-            })?;
-            let path = entry.path();
-
-            if let Some(ext) = path.extension() {
-                let ext = ext.to_string_lossy().to_lowercase();
-                if matches!(
-                    ext.as_str(),
-                    "jpg"
-                        | "jpeg"
-                        | "png"
-                        | "bmp"
-                        | "tiff"
-                        | "webp"
-                        | "hif"
-                        | "heic"
-                        | "arw"
-                        | "cr3"
-                ) {
-                    files.push(path);
-                }
+        let path = entry.path();
+        let supported = path.extension().is_some_and(|ext| {
+            matches!(
+                ext.to_string_lossy().to_lowercase().as_str(),
+                "jpg" | "jpeg" | "png" | "bmp" | "tiff" | "webp" | "hif" | "heic" | "arw" | "cr3"
+            )
+        });
+        if supported {
+            let mtime = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            files.push((path, mtime));
+            if let Some(found) = found {
+                found.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
     }
+    Ok(files)
+}
 
-    // Sort by modification date
-    files.sort_by_cached_key(|a| {
-        a.metadata()
-            .and_then(|m| m.modified())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-    });
+/// Archivos de imagen ordenados por fecha (`newest_first` invierte el orden). Para tests y benchmarks;
+/// la app usa `scan_image_files` y ordena según `SortOrder`.
+#[cfg(test)]
+pub fn get_image_files(dir: &Path, newest_first: bool) -> Result<Vec<PathBuf>, AppError> {
+    let mut files = scan_image_files(dir, None)?;
+    files.sort_by_key(|(_, mtime)| *mtime);
     if newest_first {
         files.reverse();
     }
-
-    Ok(files)
+    Ok(files.into_iter().map(|(path, _)| path).collect())
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 use super::input::{move_with_fallback, truncate_preview};
 use super::state::{ImageViewerApp, LastMove};
 use super::tags::{execute_moves, MoveReport, PlannedMove, TagModal, ToggleOutcome};
-use crate::image_loader::get_image_files;
+use crate::image_loader::scan_image_files;
 use eframe::egui::Context;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -176,10 +176,16 @@ impl ImageViewerApp {
                 failed += 1;
             }
         }
-        let rescanned = get_image_files(&self.current_dir, self.sort_newest_first)
-            .unwrap_or_else(|_| self.image_files.clone());
+        let rescanned = match scan_image_files(&self.current_dir, None) {
+            Ok(entries) => {
+                self.mtimes.extend(entries.iter().cloned());
+                entries.into_iter().map(|(path, _)| path).collect()
+            }
+            Err(_) => self.image_files.clone(),
+        };
         let count = restored.len();
         self.apply_batch_undo(restored, rescanned);
+        self.apply_sort();
 
         let mut msg = format!("Restauradas {count} imagen(es) con su tag");
         if failed > 0 {

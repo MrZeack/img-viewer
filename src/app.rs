@@ -1,5 +1,7 @@
 #[path = "app/core.rs"]
 pub mod core;
+#[path = "app/folder_load.rs"]
+pub mod folder_load;
 #[path = "app/grid.rs"]
 pub mod grid;
 #[path = "app/grid_layout.rs"]
@@ -8,6 +10,8 @@ pub mod grid_layout;
 pub mod input;
 #[path = "app/rating.rs"]
 pub mod rating;
+#[path = "app/sorting.rs"]
+pub mod sorting;
 #[path = "app/state.rs"]
 pub mod state;
 #[path = "app/tag_actions.rs"]

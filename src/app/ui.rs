@@ -1,7 +1,6 @@
 use super::state::ImageViewerApp;
 use crate::composition::generate_composition_lines;
 use crate::focus::apply_focus_peaking;
-use crate::image_loader::get_image_files;
 use crate::metadata_simple::format_file_size;
 use eframe::egui::{self, CentralPanel, Context, SidePanel, TopBottomPanel};
 use std::time::Duration;
@@ -19,8 +18,10 @@ impl eframe::App for ImageViewerApp {
 
         // Process events
         self.process_events(ctx);
+        self.poll_folder_load(ctx);
         self.sync_thumbnail_service(ctx);
         self.receive_thumbnails(ctx);
+        self.resort_when_scoring_finishes();
 
         // Periodic cache cleanup (every 30 seconds)
         let now = Instant::now();
@@ -48,24 +49,22 @@ impl eframe::App for ImageViewerApp {
                 ui.menu_button("File", |ui| {
                     if ui.button("Open Folder...").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                            self.current_dir = path;
-                            self.image_files =
-                                get_image_files(&self.current_dir, self.sort_newest_first)
-                                    .unwrap_or_default();
-                            self.current_index = 0;
                             self.tags.clear_assignments();
-                            self.sort_by_score = false;
                             self.last_moved = None;
-                            self.current_image = None;
-                            self.current_metadata = None;
-                            if !self.image_files.is_empty() {
-                                self.load_current_image(ctx);
-                            }
+                            self.start_folder_load(path);
                         }
                         ui.close_menu();
                     }
                     if ui.button("Exit").clicked() {
                         self.should_close = true;
+                    }
+                });
+                ui.menu_button("Orden", |ui| {
+                    for order in super::sorting::SortOrder::ALL {
+                        if ui.radio(self.sort_order == order, order.label()).clicked() {
+                            self.set_sort_order(order);
+                            ui.close_menu();
+                        }
                     }
                 });
             });
@@ -114,9 +113,7 @@ impl eframe::App for ImageViewerApp {
                     if let Some(score) = self.current_score() {
                         status_text.push_str(&format!(" - Nota: {:.1}", score.overall));
                     }
-                    if self.sort_by_score {
-                        status_text.push_str(" - Orden: nota");
-                    }
+                    status_text.push_str(&format!(" - Orden: {}", self.sort_order.label()));
                     if let Some((done, total)) = self.grid.progress() {
                         if done < total {
                             status_text.push_str(&format!(" - Calificando: {done}/{total}"));
@@ -132,10 +129,10 @@ impl eframe::App for ImageViewerApp {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.show_grid {
-                        ui.label("Flechas/RePág/AvPág: Mover | Enter/G/Esc/Doble clic: Abrir | +/-/Pinch: Tamaño | L/W/D/U | 1-9/0: Tag | M: Mover tags | S: Orden nota/fecha");
+                        ui.label("Flechas/RePág/AvPág: Mover | Enter/G/Esc/Doble clic: Abrir | +/-/Pinch: Tamaño | L/W/D/U | 1-9/0: Tag | M: Mover tags | S: Cambiar orden");
                         return;
                     }
-                    ui.label("G: Cuadrícula | LEFT/RIGHT: Navigate | Wheel: Zoom | L: Like | W: Worse | D: Delete | U: Undo | C: Composición | Shift+C: Off | F: Focus | H: Calidad | UP/DOWN: Tipo | R/Shift+R: Rotate | 1-9: Tag | 0: Quitar tag | T: Tags | M: Mover tags | S: Orden nota/fecha");
+                    ui.label("G: Cuadrícula | LEFT/RIGHT: Navigate | Wheel: Zoom | L: Like | W: Worse | D: Delete | U: Undo | C: Composición | Shift+C: Off | F: Focus | H: Calidad | UP/DOWN: Tipo | R/Shift+R: Rotate | 1-9: Tag | 0: Quitar tag | T: Tags | M: Mover tags | S: Cambiar orden");
                 });
             });
         });
@@ -366,6 +363,25 @@ impl eframe::App for ImageViewerApp {
         }
 
         // Main image display
+        if let Some(load) = &self.folder_load {
+            let (dir, found, elapsed) = (load.dir.clone(), load.found(), load.started.elapsed());
+            CentralPanel::default().show(ctx, |ui| {
+                ui.centered_and_justified(|ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(ui.available_height() / 2.0 - 40.0);
+                        ui.add(egui::Spinner::new().size(32.0));
+                        ui.label(format!("Cargando fotos de {}…", dir.display()));
+                        ui.label(format!(
+                            "{found} encontradas · {:.0} s",
+                            elapsed.as_secs_f32()
+                        ));
+                    });
+                });
+            });
+            self.schedule_repaint(ctx);
+            return;
+        }
+
         if self.show_grid {
             CentralPanel::default().show(ctx, |ui| self.show_grid_view(ui, ctx));
             self.show_tag_modal(ctx);
@@ -589,7 +605,10 @@ impl eframe::App for ImageViewerApp {
                     if self.image_files.is_empty() {
                         ui.label("No images found in current directory");
                     } else {
-                        ui.label("Loading image...");
+                        ui.horizontal_centered(|ui| {
+                            ui.spinner();
+                            ui.label("Cargando imagen…");
+                        });
                     }
                 });
             }
@@ -611,6 +630,9 @@ impl ImageViewerApp {
                 .is_some_and(|(done, total)| done < total)
         {
             ctx.request_repaint_after(Duration::from_millis(250));
+        }
+        if self.is_loading() {
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
         let mut needs_repaint = false;
         if let Some((_, expiry)) = &self.status_message {
