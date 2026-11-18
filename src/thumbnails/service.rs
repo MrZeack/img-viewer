@@ -155,7 +155,11 @@ impl ThumbnailService {
         let index = lock(index);
         files
             .iter()
-            .filter_map(|f| index.score_of(&file_key(f)).map(|s| (f.clone(), s)))
+            .filter_map(|f| {
+                index
+                    .score_of(&file_key(f))
+                    .map(|s| (f.clone(), scoring::rescore(s)))
+            })
             .collect()
     }
 
@@ -255,7 +259,8 @@ fn process(shared: &Shared, path: &Path, display: bool) -> Result<Outcome, Strin
     if let Some(index) = &shared.index {
         let cached = {
             let index = lock(index);
-            index.lookup(&key, stamp).map(|(offset, len, score)| {
+            index.lookup(&key, stamp).map(|(offset, len, stored)| {
+                let score = scoring::rescore(stored);
                 let bytes = display.then(|| index.read(offset, len).ok()).flatten();
                 (bytes, score)
             })
@@ -418,6 +423,37 @@ mod tests {
         let results = collect(&service, 1);
         assert!(results[0].path.ends_with("img2.jpg"));
         assert!(!service.is_failed(1));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cached_scores_are_recomputed_with_current_weights() {
+        let (root, files) = setup("rescore", 1);
+        let cache = root.join("cache");
+        let stale = Score {
+            overall: 99.0,
+            aesthetic: Some(4.0),
+            sharpness: 5.0,
+            exposure: 5.0,
+        };
+        {
+            let mut index = ThumbIndex::open(&cache, 64, SCORING_VERSION).unwrap();
+            let stamp = FileStamp::of(&files[0]).unwrap();
+            index
+                .insert(
+                    "img0.jpg",
+                    stamp,
+                    &encode_jpeg(&image::RgbImage::new(8, 8)).unwrap(),
+                    stale,
+                )
+                .unwrap();
+            index.save().unwrap();
+        }
+        let service = ThumbnailService::start(files[..1].to_vec(), Some(cache), 64, 1, None);
+        assert_eq!(service.cached_scores()[0].1.overall, 5.0);
+        service.set_view(0, [0]);
+        let shown = collect(&service, 1);
+        assert_eq!(shown[0].score.unwrap().overall, 5.0);
         std::fs::remove_dir_all(root).unwrap();
     }
 

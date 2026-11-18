@@ -37,22 +37,43 @@ pub fn score(thumb: &image::RgbImage, analysis: &image::GrayImage) -> Score {
 const AESTHETIC_CENTER: f32 = 4.0;
 const AESTHETIC_GAIN: f32 = 4.0;
 
-/// Penalización máxima por desenfoque y por exposición.
-const MAX_BLUR_PENALTY: f32 = 3.0;
-const MAX_EXPOSURE_PENALTY: f32 = 2.0;
+/// Pesos del promedio. La estética domina (≥ 50 %): en 309 ARW reales, pesos de 0,5 a 0,8
+/// separan igual `best/` del resto (AUC 0,66-0,67), así que se prioriza la preferencia.
+pub const AESTHETIC_WEIGHT: f32 = 0.7;
+pub const SHARPNESS_WEIGHT: f32 = 0.15;
+pub const EXPOSURE_WEIGHT: f32 = 0.15;
+const _: () = assert!(
+    AESTHETIC_WEIGHT >= 0.5,
+    "la estética debe pesar al menos 50 %"
+);
+const _: () = assert!((AESTHETIC_WEIGHT + SHARPNESS_WEIGHT + EXPOSURE_WEIGHT - 1.0).abs() < 1e-6);
 
-/// Combina las tres señales en una nota 1-10 con un decimal.
-///
-/// La media NIMA se estira alrededor de `AESTHETIC_CENTER` para usar la escala completa;
-/// luego se restan penalizaciones técnicas: nitidez por debajo de 4 y exposición por debajo de 5.
+/// Nota 1-10 con un decimal: promedio ponderado de la estética estirada a 1-10 y de nitidez y
+/// exposición (0-10). La media NIMA se estira alrededor de `AESTHETIC_CENTER` para usar la
+/// escala completa. Sin modelo, solo cuenta la técnica.
 pub fn combine(aesthetic: Option<f32>, sharpness: f32, exposure: f32) -> f32 {
-    let base = aesthetic.map_or(10.0, |mean| {
-        5.0 + (mean - AESTHETIC_CENTER) * AESTHETIC_GAIN
-    });
-    let blur = ((4.0 - sharpness).max(0.0) * 0.75).min(MAX_BLUR_PENALTY);
-    let light = ((5.0 - exposure).max(0.0) * 0.4).min(MAX_EXPOSURE_PENALTY);
-    let score = (base - blur - light).clamp(1.0, 10.0);
-    (score * 10.0).round() / 10.0
+    let technical = |weight_left: f32| {
+        (SHARPNESS_WEIGHT * sharpness + EXPOSURE_WEIGHT * exposure)
+            / (SHARPNESS_WEIGHT + EXPOSURE_WEIGHT)
+            * weight_left
+    };
+    let score = match aesthetic {
+        Some(mean) => {
+            let stretched = (5.0 + (mean - AESTHETIC_CENTER) * AESTHETIC_GAIN).clamp(1.0, 10.0);
+            AESTHETIC_WEIGHT * stretched + technical(1.0 - AESTHETIC_WEIGHT)
+        }
+        None => technical(1.0),
+    };
+    (score.clamp(1.0, 10.0) * 10.0).round() / 10.0
+}
+
+/// Recalcula la nota con los pesos actuales; el índice guarda los componentes, así que
+/// cambiar pesos no obliga a regenerar miniaturas.
+pub fn rescore(score: Score) -> Score {
+    Score {
+        overall: combine(score.aesthetic, score.sharpness, score.exposure),
+        ..score
+    }
 }
 
 #[cfg(test)]
@@ -60,27 +81,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn good_technique_keeps_stretched_aesthetic() {
-        assert_eq!(combine(Some(4.0), 9.0, 9.0), 5.0);
-        assert_eq!(combine(Some(4.5), 9.0, 9.0), 7.0);
-        assert_eq!(combine(Some(3.5), 9.0, 9.0), 3.0);
+    fn weighted_average_of_stretched_aesthetic_and_technique() {
+        // Estética 4,0 → 5 en escala; 0,7·5 + 0,15·5 + 0,15·5 = 5.
+        assert_eq!(combine(Some(4.0), 5.0, 5.0), 5.0);
+        // Estética 4,5 → 7: 0,7·7 + 0,15·10 + 0,15·10 = 7,9.
+        assert_eq!(combine(Some(4.5), 10.0, 10.0), 7.9);
     }
 
     #[test]
-    fn blur_and_bad_exposure_lower_the_score() {
-        let base = combine(Some(4.5), 9.0, 9.0);
-        let blurry = combine(Some(4.5), 1.0, 9.0);
-        let dark = combine(Some(4.5), 9.0, 1.0);
-        assert!(blurry < base - 1.5, "{blurry} vs {base}");
-        assert!(dark < base - 1.0, "{dark} vs {base}");
-        assert!(combine(Some(4.5), 1.0, 1.0) < blurry.min(dark));
+    fn aesthetic_dominates_technique() {
+        let beautiful_but_flawed = combine(Some(5.25), 0.0, 0.0);
+        let dull_but_perfect = combine(Some(2.75), 10.0, 10.0);
+        assert!(
+            beautiful_but_flawed > dull_but_perfect,
+            "{beautiful_but_flawed} vs {dull_but_perfect}"
+        );
+        assert!(
+            combine(Some(4.5), 9.0, 9.0) > combine(Some(4.5), 1.0, 1.0),
+            "la técnica aún cuenta"
+        );
+    }
+
+    #[test]
+    fn rescore_recomputes_overall_from_components() {
+        let stored = Score {
+            overall: 99.0,
+            aesthetic: Some(4.0),
+            sharpness: 5.0,
+            exposure: 5.0,
+        };
+        assert_eq!(rescore(stored).overall, 5.0);
+        assert_eq!(rescore(stored).aesthetic, stored.aesthetic);
     }
 
     #[test]
     fn result_is_clamped_and_rounded() {
         assert_eq!(combine(Some(10.0), 10.0, 10.0), 10.0);
         assert_eq!(combine(Some(1.0), 0.0, 0.0), 1.0);
-        let v = combine(Some(4.37), 9.0, 9.0);
+        let v = combine(Some(4.37), 7.3, 6.1);
         assert_eq!((v * 10.0).round() / 10.0, v);
     }
 
@@ -101,7 +139,7 @@ mod tests {
     #[test]
     fn without_model_uses_technical_quality_only() {
         assert_eq!(combine(None, 10.0, 10.0), 10.0);
-        assert!(combine(None, 2.0, 9.0) < combine(None, 9.0, 9.0));
+        assert_eq!(combine(None, 2.0, 8.0), 5.0);
     }
 
     /// `IMG_BENCH_DIR=<carpeta> cargo test --release bench_scores -- --ignored --nocapture`
