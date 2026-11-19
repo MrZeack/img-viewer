@@ -105,12 +105,13 @@ fn load_image_sync(request: LoadRequest) -> Result<LoadedImage, AppError> {
     })?;
 
     // Determine image format
-    // Determine image format
     let format = image::guess_format(&data);
 
     // Handle ARW, CR3 and HIF specifically if format is unknown or we want to force check extensions
     let path_str = request.path.to_string_lossy().to_lowercase();
-    if path_str.ends_with(".arw") || path_str.ends_with(".cr3") {
+    if path_str.ends_with(".arw") {
+        return load_arw(data, request.target_size);
+    } else if path_str.ends_with(".cr3") {
         return load_raw_preview(&data, request.target_size);
     } else if path_str.ends_with(".hif") || path_str.ends_with(".heic") {
         return load_hif(&data);
@@ -200,6 +201,64 @@ fn load_jpeg_optimized(
     Ok(img)
 }
 
+/// ARW: demosaica los datos del sensor a resolución completa, sin curva ni estilo de la cámara.
+/// Si quickraw no soporta el modelo, usa el JPEG embebido más grande.
+fn load_arw(data: Vec<u8>, target_size: Option<(u32, u32)>) -> Result<LoadedImage, AppError> {
+    let Some(mut img) = decode_sensor(data.clone()) else {
+        let largest = crate::thumbnails::generate::bounded_preview_jpeg(&data, data.len());
+        return match largest {
+            Some(jpg) => decode_and_fit(jpg, target_size),
+            None => load_raw_preview(&data, target_size),
+        };
+    };
+    if let Some((w, h)) = target_size {
+        if img.width() > w || img.height() > h {
+            img = img.resize(w, h, image::imageops::FilterType::Triangle);
+        }
+    }
+    Ok(LoadedImage {
+        image: dynamic_image_to_color_image(&img),
+    })
+}
+
+/// Demosaico lineal con quickraw a sRGB. La orientación la aplica la vista con el EXIF.
+/// `None` si el modelo no está soportado o quickraw entra en pánico.
+pub(crate) fn decode_sensor(data: Vec<u8>) -> Option<DynamicImage> {
+    use quickraw::{data, DemosaicingMethod, Export, Input, Output, OutputType};
+    if data.len() < 16 {
+        return None;
+    }
+    std::panic::catch_unwind(move || {
+        let output = Output::new(
+            DemosaicingMethod::Linear,
+            data::XYZ2SRGB,
+            data::GAMMA_SRGB,
+            OutputType::Raw8,
+            true,
+            false,
+        );
+        let export = Export::new(Input::ByBuffer(data), output).ok()?;
+        let (pixels, w, h) = export.export_8bit_image();
+        image::RgbImage::from_raw(w as u32, h as u32, pixels).map(DynamicImage::ImageRgb8)
+    })
+    .ok()
+    .flatten()
+}
+
+fn decode_and_fit(jpg: &[u8], target_size: Option<(u32, u32)>) -> Result<LoadedImage, AppError> {
+    let mut img = image::load_from_memory_with_format(jpg, ImageFormat::Jpeg).map_err(|e| {
+        AppError::ImageLoadError(format!("Failed to load extracted RAW preview: {}", e))
+    })?;
+    if let Some((w, h)) = target_size {
+        if img.width() > w || img.height() > h {
+            img = img.resize(w, h, image::imageops::FilterType::Triangle);
+        }
+    }
+    Ok(LoadedImage {
+        image: dynamic_image_to_color_image(&img),
+    })
+}
+
 fn load_raw_preview(data: &[u8], target_size: Option<(u32, u32)>) -> Result<LoadedImage, AppError> {
     // CR3 is not supported by quickraw: read its full-size JPEG from the container
     let jpg_data = match crate::cr3::preview_jpeg(data) {
@@ -220,22 +279,7 @@ fn load_raw_preview(data: &[u8], target_size: Option<(u32, u32)>) -> Result<Load
         },
     };
 
-    // Load the JPEG data
-    let mut img =
-        image::load_from_memory_with_format(&jpg_data, ImageFormat::Jpeg).map_err(|e| {
-            AppError::ImageLoadError(format!("Failed to load extracted RAW preview: {}", e))
-        })?;
-
-    // Resize if target_size is provided, otherwise keep the full preview resolution
-    if let Some((w, h)) = target_size {
-        // Only downscale if the image is larger than target_size
-        if img.width() > w || img.height() > h {
-            img = img.resize(w, h, image::imageops::FilterType::Triangle);
-        }
-    }
-
-    let color_image = dynamic_image_to_color_image(&img);
-    Ok(LoadedImage { image: color_image })
+    decode_and_fit(&jpg_data, target_size)
 }
 
 /// Calls `quickraw::Export::export_thumbnail_data` while guarding against panics.
@@ -541,5 +585,68 @@ mod safe_thumbnail_tests {
         let mut tiff = b"II*\x00\x08\x00\x00\x00".to_vec();
         tiff.extend_from_slice(&[0xFF; 32]);
         assert!(safe_export_thumbnail(&tiff).is_none());
+    }
+}
+
+#[cfg(test)]
+mod raw_tests {
+    use super::*;
+
+    fn sample(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("photos")
+            .join(name)
+    }
+
+    fn load(path: PathBuf, target_size: Option<(u32, u32)>) -> ColorImage {
+        load_image_sync(LoadRequest {
+            path,
+            target_size,
+            high_quality: true,
+        })
+        .unwrap()
+        .image
+    }
+
+    #[test]
+    fn garbage_sensor_data_does_not_panic() {
+        assert!(decode_sensor(Vec::new()).is_none());
+        assert!(decode_sensor(vec![0xFF; 4096]).is_none());
+    }
+
+    #[test]
+    fn unsupported_arw_model_uses_largest_embedded_jpeg() {
+        // ILCE-6700: quickraw no lo decodifica; trae JPEG de 1616×1080 y otro de 6192×4128.
+        let img = load(sample("_SON2447.ARW"), None);
+        assert_eq!(img.size[0].max(img.size[1]), 6192);
+    }
+
+    #[test]
+    fn arw_respects_target_size() {
+        let img = load(sample("_SON2447.ARW"), Some((1000, 1000)));
+        assert!(img.size[0].max(img.size[1]) <= 1000);
+    }
+
+    /// ARW de un modelo soportado (p. ej. ILCE-6000, cuyo JPEG embebido es de 1616 px):
+    /// `IMG_BENCH_DIR=<carpeta> cargo test --release arw_sensor_full_resolution -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn arw_sensor_full_resolution() {
+        let dir = PathBuf::from(std::env::var("IMG_BENCH_DIR").expect("IMG_BENCH_DIR"));
+        let path = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("arw")))
+            .expect("sin ARW");
+        let start = std::time::Instant::now();
+        let img = load(path.clone(), None);
+        println!(
+            "{}: {:?} en {:?}",
+            path.display(),
+            img.size,
+            start.elapsed()
+        );
+        assert!(img.size[0].max(img.size[1]) > 4000);
     }
 }
