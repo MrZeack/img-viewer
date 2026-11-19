@@ -2,6 +2,13 @@
 
 Cambios por versión según [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y [SemVer](https://semver.org/lang/es/). `make bump` genera cada sección desde los commits.
 
+## [0.4.0] - 2026-11-19
+
+### Added
+
+- decode ARW sensor data at full resolution
+- weight aesthetic at 70% in the overall score
+
 ## [0.3.0] - 2026-11-17
 
 ### Added
