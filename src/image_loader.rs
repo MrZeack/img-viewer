@@ -80,6 +80,11 @@ impl QueueState {
         Some(req)
     }
 
+    /// Descarta las precargas en cola (no las que ya corren): pertenecen a una posición anterior.
+    fn cancel_preloads(&mut self) {
+        self.preload.clear();
+    }
+
     fn finish(&mut self, key: &RequestKey) {
         self.in_flight.remove(key);
     }
@@ -147,6 +152,11 @@ impl ImageLoader {
 
     pub fn load_image(&self, path: &Path, target_size: Option<(u32, u32)>, high_quality: bool) {
         self.enqueue(path, target_size, high_quality, LoadPriority::Current);
+    }
+
+    /// Descarta las precargas pendientes para que las de la nueva posición vayan primero.
+    pub fn cancel_preloads(&self) {
+        lock(&self.inner.shared.queue).cancel_preloads();
     }
 
     pub fn preload_image(&self, path: &Path, target_size: Option<(u32, u32)>) {
@@ -617,6 +627,7 @@ impl ImagePreloader {
             return;
         };
 
+        self.loader.cancel_preloads();
         for i in 1..=self.preload_distance {
             if let Some(next_path) = all_files.get(idx + i) {
                 self.maybe_preload(next_path);
@@ -642,6 +653,30 @@ impl ImagePreloader {
 
 #[cfg(test)]
 mod tests {
+    fn req(name: &str) -> LoadRequest {
+        LoadRequest {
+            path: PathBuf::from(name),
+            target_size: Some((100, 100)),
+            high_quality: false,
+        }
+    }
+
+    #[test]
+    fn cancel_preloads_drops_queued_but_keeps_current_and_in_flight() {
+        let mut q = QueueState::default();
+        q.enqueue(req("/cur"), LoadPriority::Current);
+        q.enqueue(req("/old1"), LoadPriority::Preload);
+        q.enqueue(req("/old2"), LoadPriority::Preload);
+        let running = q.pop().unwrap();
+        assert_eq!(running.path, PathBuf::from("/cur"));
+        q.cancel_preloads();
+        assert!(q.pop().is_none(), "las precargas obsoletas se descartan");
+        assert!(
+            q.contains(&QueueState::key(&running)),
+            "la que corre sigue en vuelo"
+        );
+    }
+
     use super::*;
     use std::fs::{self, File};
     use std::sync::mpsc;
