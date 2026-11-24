@@ -5,7 +5,7 @@
 use super::generate::{decode_thumb, encode_jpeg, generate, generate_thumb, to_color_image};
 use super::index::{FileStamp, ThumbIndex};
 use super::queue::{Job, Queue};
-use crate::scoring::{self, Score, SCORING_VERSION};
+use crate::scoring::{self, Score, ScoreWeights, SCORING_VERSION};
 use egui::ColorImage;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,6 +51,7 @@ struct State {
 
 struct Shared {
     thumb_max: u32,
+    weights: ScoreWeights,
     state: Mutex<State>,
     work: Condvar,
     stop: AtomicBool,
@@ -72,12 +73,31 @@ impl Shared {
 }
 
 impl ThumbnailService {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn start(
         files: Vec<PathBuf>,
         cache_dir: Option<PathBuf>,
         thumb_max: u32,
         threads: usize,
         repaint: Option<egui::Context>,
+    ) -> Self {
+        Self::start_with_weights(
+            files,
+            cache_dir,
+            thumb_max,
+            threads,
+            repaint,
+            ScoreWeights::default(),
+        )
+    }
+
+    pub fn start_with_weights(
+        files: Vec<PathBuf>,
+        cache_dir: Option<PathBuf>,
+        thumb_max: u32,
+        threads: usize,
+        repaint: Option<egui::Context>,
+        weights: ScoreWeights,
     ) -> Self {
         let index =
             cache_dir.and_then(
@@ -91,6 +111,7 @@ impl ThumbnailService {
             );
         let mut shared = Shared {
             thumb_max,
+            weights,
             state: Mutex::new(State {
                 epoch: 0,
                 files: Arc::new(Vec::new()),
@@ -158,7 +179,7 @@ impl ThumbnailService {
             .filter_map(|f| {
                 index
                     .score_of(&file_key(f))
-                    .map(|s| (f.clone(), scoring::rescore(s)))
+                    .map(|s| (f.clone(), scoring::rescore_with(s, self.shared.weights)))
             })
             .collect()
     }
@@ -260,7 +281,7 @@ fn process(shared: &Shared, path: &Path, display: bool) -> Result<Outcome, Strin
         let cached = {
             let index = lock(index);
             index.lookup(&key, stamp).map(|(offset, len, stored)| {
-                let score = scoring::rescore(stored);
+                let score = scoring::rescore_with(stored, shared.weights);
                 let bytes = display.then(|| index.read(offset, len).ok()).flatten();
                 (bytes, score)
             })
@@ -286,7 +307,7 @@ fn process(shared: &Shared, path: &Path, display: bool) -> Result<Outcome, Strin
     }
 
     let generated = generate(path, shared.thumb_max)?;
-    let score = scoring::score(&generated.thumb, &generated.analysis);
+    let score = scoring::score_with(&generated.thumb, &generated.analysis, shared.weights);
     if let Some(index) = &shared.index {
         let jpeg = encode_jpeg(&generated.thumb)?;
         let mut index = lock(index);

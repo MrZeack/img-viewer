@@ -168,12 +168,13 @@ impl ImageViewerApp {
             grid.scores.clear();
             grid.service_dir = self.current_dir.clone();
             grid.service_files = self.image_files.clone();
-            grid.service = Some(ThumbnailService::start(
+            grid.service = Some(ThumbnailService::start_with_weights(
                 self.image_files.clone(),
                 cache_dir_for(&self.current_dir),
                 THUMB_MAX,
                 worker_threads(),
                 Some(ctx.clone()),
+                self.config.scoring.weights(),
             ));
             if let Some(service) = &grid.service {
                 grid.scores.extend(service.cached_scores());

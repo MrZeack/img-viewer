@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 /// Default memory budget for cached full/preview images (512 MiB).
+#[cfg(test)]
 pub const DEFAULT_IMAGE_CACHE_MAX_BYTES: usize = 512 * 1024 * 1024;
 
 struct CacheEntry<V> {
@@ -200,6 +201,7 @@ pub struct ImageCache {
 }
 
 impl ImageCache {
+    #[cfg(test)]
     pub fn new(capacity: usize) -> Self {
         Self::with_max_bytes(capacity, DEFAULT_IMAGE_CACHE_MAX_BYTES)
     }
@@ -284,10 +286,6 @@ pub struct CompositionLine {
     pub end: egui::Pos2,
     /// Stroke style for rendering the line
     pub stroke: egui::Stroke,
-}
-
-pub fn create_image_cache(capacity: usize) -> ImageCache {
-    ImageCache::new(capacity)
 }
 
 pub fn create_metadata_cache(capacity: usize) -> MetadataCache {

@@ -1,5 +1,5 @@
 use super::state::ImageViewerApp;
-use crate::cache::{create_image_cache, create_metadata_cache, CompositionCache};
+use crate::cache::{create_metadata_cache, CompositionCache, ImageCache};
 use crate::config::Config;
 use crate::event::{EventBus, ViewerEvent};
 use crate::image_loader::{ImageLoader, ImagePreloader};
@@ -18,7 +18,10 @@ impl ImageViewerApp {
             eprintln!("Warning: Could not get current directory: {}", err);
             PathBuf::from(".")
         });
-        let image_cache = create_image_cache(config.cache.image_capacity);
+        let image_cache = ImageCache::with_max_bytes(
+            config.cache.image_capacity,
+            config.cache.image_max_mb.saturating_mul(1024 * 1024),
+        );
         let image_loader = ImageLoader::new(config.performance.loader_threads, event_bus.clone());
         let preview_dim = config.performance.max_cached_dimension.min(1024);
         let preloader = ImagePreloader::new(

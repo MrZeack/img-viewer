@@ -17,14 +17,24 @@ pub struct Score {
     pub exposure: f32,
 }
 
-/// Califica una foto: estética sobre la miniatura (la red usa 224 px) y técnica sobre la
-/// imagen de análisis en escala de grises.
+/// Califica una foto con pesos por defecto: estética sobre la miniatura (224 px) y técnica sobre
+/// la imagen de análisis en escala de grises.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn score(thumb: &image::RgbImage, analysis: &image::GrayImage) -> Score {
+    score_with(thumb, analysis, ScoreWeights::default())
+}
+
+/// Califica una foto usando los pesos indicados.
+pub fn score_with(
+    thumb: &image::RgbImage,
+    analysis: &image::GrayImage,
+    weights: ScoreWeights,
+) -> Score {
     let aesthetic = nima::Nima::shared().and_then(|n| n.score(thumb).ok());
     let sharpness = technical::sharpness(analysis);
     let exposure = technical::exposure(analysis);
     Score {
-        overall: combine(aesthetic, sharpness, exposure),
+        overall: combine_with(aesthetic, sharpness, exposure, weights),
         aesthetic,
         sharpness,
         exposure,
@@ -37,7 +47,7 @@ pub fn score(thumb: &image::RgbImage, analysis: &image::GrayImage) -> Score {
 const AESTHETIC_CENTER: f32 = 4.0;
 const AESTHETIC_GAIN: f32 = 4.0;
 
-/// Pesos del promedio. La estética domina (≥ 50 %): en 309 ARW reales, pesos de 0,5 a 0,8
+/// Pesos por defecto del promedio. La estética domina (≥ 50 %): en 309 ARW reales, pesos de 0,5 a 0,8
 /// separan igual `best/` del resto (AUC 0,66-0,67), así que se prioriza la preferencia.
 pub const AESTHETIC_WEIGHT: f32 = 0.7;
 pub const SHARPNESS_WEIGHT: f32 = 0.15;
@@ -48,30 +58,85 @@ const _: () = assert!(
 );
 const _: () = assert!((AESTHETIC_WEIGHT + SHARPNESS_WEIGHT + EXPOSURE_WEIGHT - 1.0).abs() < 1e-6);
 
+/// Pesos normalizados para combinar estética, nitidez y exposición.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScoreWeights {
+    pub aesthetic: f32,
+    pub sharpness: f32,
+    pub exposure: f32,
+}
+
+impl Default for ScoreWeights {
+    fn default() -> Self {
+        Self {
+            aesthetic: AESTHETIC_WEIGHT,
+            sharpness: SHARPNESS_WEIGHT,
+            exposure: EXPOSURE_WEIGHT,
+        }
+    }
+}
+
+impl ScoreWeights {
+    /// Normaliza pesos no negativos a suma 1.0; si todos son ≤ 0 o no finitos, usa los por defecto.
+    pub fn normalized(aesthetic: f32, sharpness: f32, exposure: f32) -> Self {
+        let clean = |v: f32| if v.is_finite() && v > 0.0 { v } else { 0.0 };
+        let (a, s, e) = (clean(aesthetic), clean(sharpness), clean(exposure));
+        let sum = a + s + e;
+        if sum <= 0.0 {
+            return Self::default();
+        }
+        Self {
+            aesthetic: a / sum,
+            sharpness: s / sum,
+            exposure: e / sum,
+        }
+    }
+}
+
+/// Nota 1-10 con un decimal usando los pesos por defecto.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn combine(aesthetic: Option<f32>, sharpness: f32, exposure: f32) -> f32 {
+    combine_with(aesthetic, sharpness, exposure, ScoreWeights::default())
+}
+
 /// Nota 1-10 con un decimal: promedio ponderado de la estética estirada a 1-10 y de nitidez y
 /// exposición (0-10). La media NIMA se estira alrededor de `AESTHETIC_CENTER` para usar la
 /// escala completa. Sin modelo, solo cuenta la técnica.
-pub fn combine(aesthetic: Option<f32>, sharpness: f32, exposure: f32) -> f32 {
+pub fn combine_with(
+    aesthetic: Option<f32>,
+    sharpness: f32,
+    exposure: f32,
+    weights: ScoreWeights,
+) -> f32 {
+    let tech_sum = weights.sharpness + weights.exposure;
     let technical = |weight_left: f32| {
-        (SHARPNESS_WEIGHT * sharpness + EXPOSURE_WEIGHT * exposure)
-            / (SHARPNESS_WEIGHT + EXPOSURE_WEIGHT)
-            * weight_left
+        if tech_sum > 0.0 {
+            (weights.sharpness * sharpness + weights.exposure * exposure) / tech_sum * weight_left
+        } else {
+            (sharpness + exposure) * 0.5 * weight_left
+        }
     };
     let score = match aesthetic {
         Some(mean) => {
             let stretched = (5.0 + (mean - AESTHETIC_CENTER) * AESTHETIC_GAIN).clamp(1.0, 10.0);
-            AESTHETIC_WEIGHT * stretched + technical(1.0 - AESTHETIC_WEIGHT)
+            weights.aesthetic * stretched + technical(1.0 - weights.aesthetic)
         }
         None => technical(1.0),
     };
     (score.clamp(1.0, 10.0) * 10.0).round() / 10.0
 }
 
-/// Recalcula la nota con los pesos actuales; el índice guarda los componentes, así que
-/// cambiar pesos no obliga a regenerar miniaturas.
+/// Recalcula la nota con los pesos por defecto.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn rescore(score: Score) -> Score {
+    rescore_with(score, ScoreWeights::default())
+}
+
+/// Recalcula la nota con los pesos actuales; el índice guarda los componentes, así que
+/// cambiar pesos en `config.toml` no obliga a regenerar miniaturas.
+pub fn rescore_with(score: Score, weights: ScoreWeights) -> Score {
     Score {
-        overall: combine(score.aesthetic, score.sharpness, score.exposure),
+        overall: combine_with(score.aesthetic, score.sharpness, score.exposure, weights),
         ..score
     }
 }
@@ -140,6 +205,21 @@ mod tests {
     fn without_model_uses_technical_quality_only() {
         assert_eq!(combine(None, 10.0, 10.0), 10.0);
         assert_eq!(combine(None, 2.0, 8.0), 5.0);
+    }
+
+    #[test]
+    fn custom_weights_recompute_overall_score() {
+        // Aesthetic 4.5 -> stretched 7.0; sharpness 10.0; exposure 2.0.
+        // With weights (0.5, 0.5, 0.0) => 0.5*7 + 0.5*10 = 8.5.
+        let w = ScoreWeights::normalized(0.5, 0.5, 0.0);
+        assert_eq!(combine_with(Some(4.5), 10.0, 2.0, w), 8.5);
+        let stored = Score {
+            overall: 1.0,
+            aesthetic: Some(4.5),
+            sharpness: 10.0,
+            exposure: 2.0,
+        };
+        assert_eq!(rescore_with(stored, w).overall, 8.5);
     }
 
     /// `IMG_BENCH_DIR=<carpeta> cargo test --release bench_scores -- --ignored --nocapture`
