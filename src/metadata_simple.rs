@@ -565,9 +565,7 @@ mod tests {
 
     #[test]
     fn extracts_cr3_sample_metadata() {
-        let path = sample(
-            "canon-eos-r50-2025-08-08-canon-eos-r50-2025-08-08-img_8333-56f54f9a-56f54f9a.cr3",
-        );
+        let path = sample("example1.cr3");
         let metadata = extract_metadata(&path).unwrap();
         assert_ne!(metadata.image_info.dimensions, (0, 0));
         let exif = metadata.exif_info.expect("CR3 EXIF should be found");
@@ -585,7 +583,7 @@ mod tests {
 
     #[test]
     fn extracts_arw_sample_metadata() {
-        let path = sample("_SON2447.ARW");
+        let path = sample("example3.ARW");
         let metadata = extract_metadata(&path).unwrap();
         assert_ne!(metadata.image_info.dimensions, (0, 0));
         let exif = metadata.exif_info.expect("ARW EXIF should be found");
@@ -601,7 +599,7 @@ mod tests {
 
     #[test]
     fn extracts_hif_sample_metadata() {
-        let path = sample("IMG_8382.HIF");
+        let path = sample("example2.HIF");
         let metadata = extract_metadata(&path).unwrap();
         assert_ne!(metadata.image_info.dimensions, (0, 0));
     }

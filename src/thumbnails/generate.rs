@@ -493,11 +493,7 @@ mod tests {
 
     #[test]
     fn real_raw_and_heif_samples_produce_bounded_thumbnails() {
-        for name in [
-            "_SON2447.ARW",
-            "canon-eos-r50-2025-08-08-canon-eos-r50-2025-08-08-img_8333-56f54f9a-56f54f9a.cr3",
-            "IMG_8382.HIF",
-        ] {
+        for name in ["example3.ARW", "example1.cr3", "example2.HIF"] {
             let generated = generate(&sample(name), 320).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(long_edge(&generated.thumb), 320, "{name}");
             let (w, h) = generated.analysis.dimensions();
@@ -507,9 +503,7 @@ mod tests {
 
     #[test]
     fn cr3_uses_container_preview_and_orientation() {
-        let path = sample(
-            "canon-eos-r50-2025-08-08-canon-eos-r50-2025-08-08-img_8333-56f54f9a-56f54f9a.cr3",
-        );
+        let path = sample("example1.cr3");
         let data = std::fs::read(&path).unwrap();
         let (preview, orientation) = raw_preview(&data).unwrap();
         assert_eq!(&*preview, crate::cr3::preview_jpeg(&data).unwrap());

@@ -743,7 +743,7 @@ mod tests {
     fn hif_respects_target_size() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("photos")
-            .join("IMG_8382.HIF");
+            .join("example2.HIF");
         let loaded = load_image_sync(LoadRequest {
             path,
             target_size: Some((600, 600)),
@@ -875,13 +875,13 @@ mod raw_tests {
     #[test]
     fn unsupported_arw_model_uses_largest_embedded_jpeg() {
         // ILCE-6700: quickraw no lo decodifica; trae JPEG de 1616×1080 y otro de 6192×4128.
-        let img = load(sample("_SON2447.ARW"), None);
+        let img = load(sample("example3.ARW"), None);
         assert_eq!(img.size[0].max(img.size[1]), 6192);
     }
 
     #[test]
     fn arw_respects_target_size() {
-        let img = load(sample("_SON2447.ARW"), Some((1000, 1000)));
+        let img = load(sample("example3.ARW"), Some((1000, 1000)));
         assert!(img.size[0].max(img.size[1]) <= 1000);
     }
 
