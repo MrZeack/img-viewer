@@ -87,7 +87,7 @@ Every photo gets a 1-10 score in the background (status bar, sidebar breakdown, 
 - **Sharpness:** Laplacian variance of the sharpest blocks of an 800 px version, so a blurred background does not penalize an in-focus subject.
 - **Exposure:** share of clipped highlights, crushed shadows and mean brightness.
 
-The score is a weighted average: 70% aesthetic (NIMA mean stretched to 1-10), 15% sharpness, 15% exposure by default, configurable under `[scoring]` in `config.toml`. Components are cached with the thumbnails; the final score is recomputed from them when read, so changing weights does not regenerate anything.
+The score is a weighted average: 70% aesthetic (NIMA mean stretched to 1-10), 15% sharpness, 15% exposure by default, configurable under `[scoring]` in `config.toml` (weights are normalized and aesthetic never drops below 50%). Components are cached with the thumbnails; the final score is recomputed from them when read, so changing weights does not regenerate anything.
 
 ### CLI Options
 ```bash

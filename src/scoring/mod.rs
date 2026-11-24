@@ -52,8 +52,10 @@ const AESTHETIC_GAIN: f32 = 4.0;
 pub const AESTHETIC_WEIGHT: f32 = 0.7;
 pub const SHARPNESS_WEIGHT: f32 = 0.15;
 pub const EXPOSURE_WEIGHT: f32 = 0.15;
+/// Peso mínimo de la estética, también para los pesos configurados en `config.toml`.
+pub const MIN_AESTHETIC_WEIGHT: f32 = 0.5;
 const _: () = assert!(
-    AESTHETIC_WEIGHT >= 0.5,
+    AESTHETIC_WEIGHT >= MIN_AESTHETIC_WEIGHT,
     "la estética debe pesar al menos 50 %"
 );
 const _: () = assert!((AESTHETIC_WEIGHT + SHARPNESS_WEIGHT + EXPOSURE_WEIGHT - 1.0).abs() < 1e-6);
@@ -77,7 +79,8 @@ impl Default for ScoreWeights {
 }
 
 impl ScoreWeights {
-    /// Normaliza pesos no negativos a suma 1.0; si todos son ≤ 0 o no finitos, usa los por defecto.
+    /// Normaliza pesos no negativos a suma 1.0 con la estética en al menos `MIN_AESTHETIC_WEIGHT`
+    /// (el resto se reparte en proporción); si todos son ≤ 0 o no finitos, usa los por defecto.
     pub fn normalized(aesthetic: f32, sharpness: f32, exposure: f32) -> Self {
         let clean = |v: f32| if v.is_finite() && v > 0.0 { v } else { 0.0 };
         let (a, s, e) = (clean(aesthetic), clean(sharpness), clean(exposure));
@@ -85,10 +88,19 @@ impl ScoreWeights {
         if sum <= 0.0 {
             return Self::default();
         }
+        let aesthetic = (a / sum).max(MIN_AESTHETIC_WEIGHT);
+        let technical = s + e;
+        let (sharpness, exposure) = if technical > 0.0 {
+            let left = 1.0 - aesthetic;
+            (s / technical * left, e / technical * left)
+        } else {
+            (0.0, 0.0)
+        };
+        let aesthetic = if technical > 0.0 { aesthetic } else { 1.0 };
         Self {
-            aesthetic: a / sum,
-            sharpness: s / sum,
-            exposure: e / sum,
+            aesthetic,
+            sharpness,
+            exposure,
         }
     }
 }
@@ -205,6 +217,22 @@ mod tests {
     fn without_model_uses_technical_quality_only() {
         assert_eq!(combine(None, 10.0, 10.0), 10.0);
         assert_eq!(combine(None, 2.0, 8.0), 5.0);
+    }
+
+    #[test]
+    fn configured_weights_keep_aesthetic_at_least_half() {
+        let w = ScoreWeights::normalized(0.2, 0.4, 0.4);
+        assert!((w.aesthetic - 0.5).abs() < 1e-6);
+        assert!((w.sharpness - 0.25).abs() < 1e-6);
+        assert!((w.exposure - 0.25).abs() < 1e-6);
+        let only_sharp = ScoreWeights::normalized(0.0, 1.0, 0.0);
+        assert!((only_sharp.aesthetic - 0.5).abs() < 1e-6);
+        assert!((only_sharp.sharpness - 0.5).abs() < 1e-6);
+        let mostly_aesthetic = ScoreWeights::normalized(0.9, 0.1, 0.0);
+        assert!(
+            (mostly_aesthetic.aesthetic - 0.9).abs() < 1e-6,
+            "por encima del mínimo no cambia"
+        );
     }
 
     #[test]
