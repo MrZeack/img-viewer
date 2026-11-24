@@ -2,6 +2,28 @@
 
 Cambios por versión según [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y [SemVer](https://semver.org/lang/es/). `make bump` genera cada sección desde los commits.
 
+## [0.5.0] - 2026-11-23
+
+### Added
+
+- add CLI path arg, drag-and-drop, histogram, zoom/sidebar shortcuts, cache clear, and Spanish UI
+
+### Fixed
+
+- keep configured aesthetic weight at 50% or more
+- stop endless repaint after skipping images quickly
+- cancel stale preloads when the position changes
+- validate bounds, write atomically, backup corrupt config, and make scoring weights configurable
+- prevent overwrite on L/W/D, add multi-level undo stack, and unify move logic
+- fix JPEG/HIF scaling, error propagation, preview/HQ cache conflicts, and priority queue
+
+### Changed
+
+- drop in-memory decode_sensor kept only for tests
+- deduplicate EXIF parsing, fix JPEG scanner/GPS/orientation/datetime, and run fixture tests
+- cache focus peaking texture, parallelize LoG, fix zoom/grid bugs and composition guides
+- consolidate caches into generic TimestampedLruCache with byte budget
+
 ## [0.4.0] - 2026-11-19
 
 ### Added
