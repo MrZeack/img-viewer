@@ -49,10 +49,7 @@ impl ImageViewerApp {
             preloader,
             loading_requests: std::collections::HashMap::new(),
             current_metadata: None,
-            metadata_loader: MetadataLoader::new(
-                (config.performance.loader_threads / 2).max(1),
-                event_bus.clone(),
-            ),
+            metadata_loader: MetadataLoader::new(event_bus.clone()),
             show_composition: config.view.show_composition,
             composition_type: parse_composition_type(&config.view.composition_type),
             show_sidebar: true,
@@ -155,36 +152,30 @@ impl ImageViewerApp {
             self.rotation_manually_set = false;
         }
 
-        // Check metadata cache for auto-rotation
+        // Check metadata cache for auto-rotation; only dispatch worker on cache miss.
         if let Some(cached_metadata) = self.metadata_cache.get(&path_str) {
-            self.current_metadata = Some(cached_metadata.clone());
-            if !self.rotation_manually_set {
-                if let Some(exif) = &cached_metadata.exif_info {
-                    if let Some(orientation) = &exif.orientation {
-                        self.rotation = match orientation.as_str() {
-                            "row 0 at top and column 0 at left" => 0,
-                            "row 0 at bottom and column 0 at right" => 2,
-                            "row 0 at right and column 0 at top" => 1,
-                            "row 0 at left and column 0 at bottom" => 3,
-                            "row 0 at top and column 0 at right" => 0,
-                            "row 0 at bottom and column 0 at left" => 2,
-                            "row 0 at left and column 0 at top" => 3,
-                            "row 0 at right and column 0 at bottom" => 1,
-                            _ => 0,
-                        };
-                    }
-                }
-            }
+            self.apply_exif_rotation(&cached_metadata);
+            self.current_metadata = Some(cached_metadata);
         } else {
             self.current_metadata = None;
+            self.metadata_loader.load_metadata(&current_path);
         }
-
-        // Request metadata extraction
-        let path = current_path.clone();
-        self.metadata_loader.load_metadata(&path);
 
         // Aggressive cleanup of distant entries on navigation
         self.cleanup_distant_cache_entries();
+    }
+
+    fn apply_exif_rotation(&mut self, metadata: &crate::metadata_simple::ImageMetadata) {
+        if self.rotation_manually_set {
+            return;
+        }
+        if let Some(code) = metadata
+            .exif_info
+            .as_ref()
+            .and_then(|exif| exif.orientation_code)
+        {
+            self.rotation = rotation_steps_from_exif(code);
+        }
     }
 
     pub(crate) fn process_events(&mut self, ctx: &Context) {
@@ -236,24 +227,8 @@ impl ImageViewerApp {
                 ViewerEvent::MetadataReady(path, metadata) => {
                     let metadata = *metadata;
                     if should_apply_event(self.current_path(), &path) {
+                        self.apply_exif_rotation(&metadata);
                         self.current_metadata = Some(metadata.clone());
-                        if !self.rotation_manually_set {
-                            if let Some(exif) = &metadata.exif_info {
-                                if let Some(orientation) = &exif.orientation {
-                                    self.rotation = match orientation.as_str() {
-                                        "row 0 at top and column 0 at left" => 0,
-                                        "row 0 at bottom and column 0 at right" => 2,
-                                        "row 0 at right and column 0 at top" => 1,
-                                        "row 0 at left and column 0 at bottom" => 3,
-                                        "row 0 at top and column 0 at right" => 0,
-                                        "row 0 at bottom and column 0 at left" => 2,
-                                        "row 0 at left and column 0 at top" => 3,
-                                        "row 0 at right and column 0 at bottom" => 1,
-                                        _ => 0,
-                                    };
-                                }
-                            }
-                        }
                     }
                     let path_str = path.to_string_lossy().to_string();
                     self.metadata_cache.put(path_str, metadata);
@@ -267,6 +242,16 @@ impl ImageViewerApp {
             message.to_string(),
             Instant::now() + std::time::Duration::from_secs_f32(duration_secs),
         ));
+    }
+}
+
+/// Maps EXIF Orientation tag (1..=8) to 90-degree clockwise rotation steps (0..=3).
+pub(crate) fn rotation_steps_from_exif(orientation: u32) -> i32 {
+    match orientation {
+        3 | 4 => 2,
+        6 | 7 => 1,
+        5 | 8 => 3,
+        _ => 0,
     }
 }
 
@@ -298,7 +283,7 @@ fn parse_composition_type(name: &str) -> crate::composition::CompositionType {
 
 #[cfg(test)]
 mod tests {
-    use super::should_apply_event;
+    use super::{rotation_steps_from_exif, should_apply_event};
     use std::path::PathBuf;
 
     #[test]
@@ -341,5 +326,14 @@ mod tests {
 
         assert!(!app.loading_requests.contains_key(&p));
         assert_eq!(app.current_load_error.as_deref(), Some("corrupt file"));
+    }
+
+    #[test]
+    fn rotation_steps_from_exif_maps_numeric_tags() {
+        assert_eq!(rotation_steps_from_exif(1), 0);
+        assert_eq!(rotation_steps_from_exif(3), 2);
+        assert_eq!(rotation_steps_from_exif(6), 1);
+        assert_eq!(rotation_steps_from_exif(8), 3);
+        assert_eq!(rotation_steps_from_exif(99), 0);
     }
 }

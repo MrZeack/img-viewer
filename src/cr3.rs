@@ -299,9 +299,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs example.CR3 in the repository root"]
-    fn reads_example_cr3() {
-        let data = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/example.CR3")).unwrap();
+    fn reads_sample_cr3_fixture() {
+        let data = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/photos/canon-eos-r50-2025-08-08-canon-eos-r50-2025-08-08-img_8333-56f54f9a-56f54f9a.cr3"
+        ))
+        .unwrap();
         assert!(is_cr3(&data));
         let exifs = read_exif(&data);
         let make = exifs

@@ -165,6 +165,71 @@ pub fn decode_jpeg_scaled(data: &[u8], max: u32) -> Result<RgbImage, String> {
     RgbImage::from_raw(w, h, rgb).ok_or_else(|| "buffer JPEG inválido".to_string())
 }
 
+/// Busca el final de un JPEG empezando en `start` (`FF D8`), respetando longitudes de segmentos
+/// (como APP1/EXIF con miniatura embebida) para no truncar en un `FF D9` interno.
+fn find_jpeg_end(data: &[u8], start: usize) -> Option<usize> {
+    if data.get(start + 2) == Some(&0xFF) {
+        if let Some(end) = find_jpeg_end_structured(data, start) {
+            return Some(end);
+        }
+    }
+    data[start + 2..]
+        .windows(2)
+        .position(|w| w == [0xFF, 0xD9])
+        .map(|p| start + 2 + p + 2)
+}
+
+fn find_jpeg_end_structured(data: &[u8], start: usize) -> Option<usize> {
+    let mut pos = start + 2;
+    while pos < data.len() {
+        if data[pos] != 0xFF {
+            return None;
+        }
+        while pos < data.len() && data[pos] == 0xFF {
+            pos += 1;
+        }
+        if pos >= data.len() {
+            return None;
+        }
+        let marker = data[pos];
+        pos += 1;
+
+        match marker {
+            0xD9 => return Some(pos),
+            0x01 | 0xD0..=0xD8 => continue,
+            0xDA => {
+                // Start of Scan: skip header, then scan entropy-coded data to EOI.
+                let len = u16::from_be_bytes([*data.get(pos)?, *data.get(pos + 1)?]) as usize;
+                if len < 2 || pos + len > data.len() {
+                    return None;
+                }
+                pos += len;
+                while pos + 1 < data.len() {
+                    if data[pos] == 0xFF {
+                        let next = data[pos + 1];
+                        if next == 0xD9 {
+                            return Some(pos + 2);
+                        } else if next == 0x00 || (0xD0..=0xD7).contains(&next) || next == 0xFF {
+                            pos += 2;
+                            continue;
+                        }
+                    }
+                    pos += 1;
+                }
+                return None;
+            }
+            _ => {
+                let len = u16::from_be_bytes([*data.get(pos)?, *data.get(pos + 1)?]) as usize;
+                if len < 2 || pos + len > data.len() {
+                    return None;
+                }
+                pos += len;
+            }
+        }
+    }
+    None
+}
+
 /// JPEG embebido más grande que empieza dentro de los primeros `limit` bytes.
 pub fn bounded_preview_jpeg(data: &[u8], limit: usize) -> Option<&[u8]> {
     let scan_end = limit.min(data.len());
@@ -172,11 +237,7 @@ pub fn bounded_preview_jpeg(data: &[u8], limit: usize) -> Option<&[u8]> {
     let mut i = 0;
     while i + 1 < scan_end {
         if data[i] == 0xFF && data[i + 1] == 0xD8 {
-            let end = data[i + 2..]
-                .windows(2)
-                .position(|w| w == [0xFF, 0xD9])
-                .map(|p| i + 2 + p + 2);
-            match end {
+            match find_jpeg_end(data, i) {
                 Some(end) => {
                     if best.is_none_or(|(s, e)| end - i > e - s) {
                         best = Some((i, end));
@@ -351,6 +412,31 @@ mod tests {
         assert_eq!(bounded_preview_jpeg(&data, data.len()).unwrap().len(), 504);
         assert_eq!(bounded_preview_jpeg(&data, big_start).unwrap().len(), 104);
         assert_eq!(bounded_preview_jpeg(&data[..small_start], 1000), None);
+    }
+
+    #[test]
+    fn bounded_preview_skips_embedded_exif_thumbnail_eoi() {
+        // Outer JPEG with an APP1 segment containing an inner FF D8 ... FF D9 thumbnail.
+        let mut jpeg = vec![0xFF, 0xD8];
+        let mut app1_payload = b"Exif\0\0".to_vec();
+        app1_payload.extend([0xFF, 0xD8, 0x11, 0x22, 0xFF, 0xD9]); // embedded thumb
+        let app1_len = (app1_payload.len() + 2) as u16;
+        jpeg.extend([0xFF, 0xE1]);
+        jpeg.extend(app1_len.to_be_bytes());
+        jpeg.extend(app1_payload);
+        // SOS header (len 4) + entropy data + outer EOI
+        jpeg.extend([0xFF, 0xDA, 0x00, 0x04, 0x01, 0x02]);
+        jpeg.extend(vec![0xAA; 200]);
+        jpeg.extend([0xFF, 0xD9]);
+
+        let mut blob = vec![0u8; 32];
+        blob.extend(&jpeg);
+        let found = bounded_preview_jpeg(&blob, blob.len()).unwrap();
+        assert_eq!(
+            found.len(),
+            jpeg.len(),
+            "must not truncate outer JPEG at APP1 embedded thumbnail EOI"
+        );
     }
 
     #[test]

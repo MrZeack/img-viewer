@@ -211,7 +211,7 @@ pub(crate) fn test_app(files: Vec<PathBuf>, current_index: usize) -> ImageViewer
         preloader,
         loading_requests: HashMap::new(),
         current_metadata: None,
-        metadata_loader: MetadataLoader::new(1, event_bus),
+        metadata_loader: MetadataLoader::new(event_bus),
         show_composition: false,
         composition_type: CompositionType::RuleOfThirds,
         show_sidebar: true,

@@ -285,15 +285,26 @@ impl eframe::App for ImageViewerApp {
                                 ui.separator();
                                 egui::Grid::new("image_info_grid").show(ui, |ui| {
                                     ui.label("Dimensiones:");
-                                    ui.label(format!(
-                                        "{}×{}",
-                                        metadata.image_info.dimensions.0,
-                                        metadata.image_info.dimensions.1
-                                    ));
+                                    if metadata.image_info.dimensions == (0, 0) {
+                                        ui.label("—");
+                                    } else {
+                                        ui.label(format!(
+                                            "{}×{}",
+                                            metadata.image_info.dimensions.0,
+                                            metadata.image_info.dimensions.1
+                                        ));
+                                    }
                                     ui.end_row();
 
                                     ui.label("Megapíxeles:");
-                                    ui.label(format!("{:.1} MP", metadata.image_info.megapixels));
+                                    if metadata.image_info.dimensions == (0, 0) {
+                                        ui.label("—");
+                                    } else {
+                                        ui.label(format!(
+                                            "{:.1} MP",
+                                            metadata.image_info.megapixels
+                                        ));
+                                    }
                                     ui.end_row();
 
                                     ui.label("Relación:");
