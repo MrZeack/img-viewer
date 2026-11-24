@@ -115,6 +115,9 @@ impl ImageViewerApp {
             return;
         };
         self.current_load_error = None;
+        // La cola descarta sin evento las peticiones de imágenes anteriores; si quedaran aquí,
+        // la UI repintaría a 60 fps para siempre.
+        self.loading_requests.retain(|p, _| *p == current_path);
         let path_str = current_path.to_string_lossy().to_string();
         let target_dim = self.desired_target_dim(&current_path);
         let target_size = target_dim.map(|d| (d, d));
@@ -335,5 +338,18 @@ mod tests {
         assert_eq!(rotation_steps_from_exif(6), 1);
         assert_eq!(rotation_steps_from_exif(8), 3);
         assert_eq!(rotation_steps_from_exif(99), 0);
+    }
+
+    #[test]
+    fn navigating_drops_loading_requests_of_previous_images() {
+        let (a, b) = (PathBuf::from("/tmp/a.jpg"), PathBuf::from("/tmp/b.jpg"));
+        let mut app = super::super::state::test_app(vec![a.clone(), b.clone()], 0);
+        // La cola descarta la petición de `a` al pedir `b`: nunca llega su evento.
+        app.loading_requests
+            .insert(a.clone(), std::time::Instant::now());
+        app.current_index = 1;
+        app.load_current_image(&eframe::egui::Context::default());
+        assert!(!app.loading_requests.contains_key(&a));
+        assert!(app.loading_requests.contains_key(&b));
     }
 }
