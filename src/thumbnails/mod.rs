@@ -9,11 +9,52 @@ use std::path::{Path, PathBuf};
 /// Lado mayor de la miniatura en píxeles: nítida en Retina hasta celdas de ~190 pt.
 pub const THUMB_MAX: u32 = 384;
 
+/// Raíz del caché de miniaturas del usuario (`<cache>/thumbs`).
+pub fn thumbs_root_dir() -> Option<PathBuf> {
+    let base = directories::ProjectDirs::from("fyi", "voza", "img-viewer")?;
+    Some(base.cache_dir().join("thumbs"))
+}
+
 /// Carpeta de caché del índice para `dir`: `<cache del usuario>/thumbs/<hash de la ruta>`.
 pub fn cache_dir_for(dir: &Path) -> Option<PathBuf> {
     let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     let base = directories::ProjectDirs::from("fyi", "voza", "img-viewer")?;
     Some(cache_dir_in(base.cache_dir(), &canonical))
+}
+
+/// Elimina todo el contenido bajo `root` y devuelve los bytes liberados.
+pub fn clear_cache_dir(root: &Path) -> std::io::Result<u64> {
+    if !root.exists() {
+        return Ok(0);
+    }
+    let bytes = dir_size(root);
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    Ok(bytes)
+}
+
+fn dir_size(path: &Path) -> u64 {
+    let Ok(read_dir) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    read_dir
+        .flatten()
+        .map(|entry| {
+            let p = entry.path();
+            if p.is_dir() {
+                dir_size(&p)
+            } else {
+                entry.metadata().map(|m| m.len()).unwrap_or(0)
+            }
+        })
+        .sum()
 }
 
 fn cache_dir_in(base: &Path, canonical_dir: &Path) -> PathBuf {
@@ -54,5 +95,23 @@ mod tests {
         assert_eq!(a, cache_dir_in(Path::new("/c"), Path::new("/fotos/viaje")));
         assert_ne!(a, cache_dir_in(Path::new("/c"), Path::new("/fotos/otro")));
         assert!(a.starts_with("/c/thumbs"));
+    }
+
+    #[test]
+    fn clear_cache_dir_removes_entries_and_counts_bytes() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("ivt-clear-{}-{nanos}", std::process::id()));
+        let sub = root.join("abcd");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("data-0.bin"), vec![1u8; 512]).unwrap();
+        std::fs::write(sub.join("index.bin"), vec![2u8; 128]).unwrap();
+
+        let freed = clear_cache_dir(&root).unwrap();
+        assert_eq!(freed, 640);
+        assert!(!sub.exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

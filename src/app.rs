@@ -8,6 +8,8 @@ pub mod grid;
 pub mod grid_layout;
 #[path = "app/help.rs"]
 pub mod help;
+#[path = "app/histogram.rs"]
+pub mod histogram;
 #[path = "app/input.rs"]
 pub mod input;
 #[path = "app/rating.rs"]

@@ -22,7 +22,10 @@ pub(crate) const SECTIONS: &[Section] = &[
         items: &[
             ("← →", "Imagen anterior / siguiente"),
             ("Rueda / pellizco", "Zoom"),
+            ("+ / - / Espacio", "Acercar / alejar / ajustar a ventana"),
+            ("Z / Doble clic", "Alternar zoom 100% (1:1) / ajustar"),
             ("Arrastrar", "Mover la imagen con zoom"),
+            ("I / Tab", "Mostrar u ocultar panel lateral"),
             ("R / Shift+R", "Rotar a la derecha / izquierda"),
             (
                 "C / Shift+C",
@@ -160,6 +163,9 @@ mod tests {
             "↑ ↓",
             "F",
             "H",
+            "I / Tab",
+            "Z / Doble clic",
+            "+ / - / Espacio",
             "L",
             "W",
             "D",

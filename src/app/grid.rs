@@ -101,6 +101,14 @@ pub(crate) fn evict_outside<V>(
 }
 
 impl ImageViewerApp {
+    pub(crate) fn clear_thumbnail_service(&mut self) {
+        self.grid.service = None;
+        self.grid.textures.clear();
+        self.grid.failed.clear();
+        self.grid.scores.clear();
+        self.grid.last_request = None;
+    }
+
     pub(crate) fn open_grid(&mut self) {
         self.show_grid = true;
         self.grid.scroll_to_selected = true;

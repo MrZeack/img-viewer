@@ -26,6 +26,8 @@ pub struct ImageViewerApp {
     pub(crate) current_load_error: Option<String>,
     /// Current zoom factor
     pub(crate) zoom_factor: f32,
+    /// Last computed fit-to-window scale (used for 1:1 pixel zoom toggle)
+    pub(crate) last_fit_scale: f32,
     /// Current position of the image view
     pub(crate) image_position: egui::Vec2,
 
@@ -104,6 +106,8 @@ pub struct ImageViewerApp {
     pub(crate) show_focus_peaking: bool,
     /// Cached focus-peaking texture keyed by (path, image pixel size)
     pub(crate) focus_peaking_cache: Option<(PathBuf, [usize; 2], egui::TextureHandle)>,
+    /// Cached sidebar histogram keyed by (path, image pixel size)
+    pub(crate) histogram_cache: Option<(PathBuf, [usize; 2], super::histogram::Histogram)>,
 
     /// Quality multiplier for on-demand high resolution rendering (1: Normal, 2: 3x, 3: Original/Max)
     pub(crate) quality_multiplier: u8,
@@ -198,6 +202,7 @@ pub(crate) fn test_app(files: Vec<PathBuf>, current_index: usize) -> ImageViewer
         current_image: None,
         current_load_error: None,
         zoom_factor: 1.0,
+        last_fit_scale: 1.0,
         image_position: egui::Vec2::ZERO,
         image_cache: ImageCache::new(2),
         metadata_cache: MetadataCache::new(2),
@@ -230,6 +235,7 @@ pub(crate) fn test_app(files: Vec<PathBuf>, current_index: usize) -> ImageViewer
         rotation_manually_set: false,
         show_focus_peaking: false,
         focus_peaking_cache: None,
+        histogram_cache: None,
         quality_multiplier: 1,
         config: crate::config::Config::default(),
     }

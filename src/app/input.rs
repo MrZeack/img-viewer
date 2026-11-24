@@ -71,18 +71,18 @@ impl ImageViewerApp {
             let shift = ctx.input(|i| i.modifiers.shift);
             if shift {
                 self.rotation = (self.rotation - 1).rem_euclid(4);
-                self.set_status_message("Rotated counter-clockwise", 1.5);
+                self.set_status_message("Rotada 90° antihorario", 1.5);
             } else {
                 self.rotation = (self.rotation + 1).rem_euclid(4);
-                self.set_status_message("Rotated clockwise", 1.5);
+                self.set_status_message("Rotada 90° horario", 1.5);
             }
         } else if ctx.input(|i| i.key_pressed(Key::F)) {
             self.show_focus_peaking = !self.show_focus_peaking;
             if self.show_focus_peaking {
-                self.set_status_message("Focus Peaking: ON", 2.0);
+                self.set_status_message("Focus peaking: activado", 2.0);
             } else {
                 self.focus_peaking_cache = None;
-                self.set_status_message("Focus Peaking: OFF", 2.0);
+                self.set_status_message("Focus peaking: desactivado", 2.0);
             }
             self.save_view_config();
         } else if ctx.input(|i| i.key_pressed(Key::H)) {
@@ -99,9 +99,45 @@ impl ImageViewerApp {
             };
             self.set_status_message(msg, 2.5);
             self.load_current_image_with_reset(ctx, false);
+        } else if ctx.input(|i| i.key_pressed(Key::I) || i.key_pressed(Key::Tab)) {
+            self.show_sidebar = !self.show_sidebar;
+            self.set_status_message(
+                if self.show_sidebar {
+                    "Panel lateral visible"
+                } else {
+                    "Panel lateral oculto"
+                },
+                1.5,
+            );
+        } else if ctx.input(|i| i.key_pressed(Key::Z)) {
+            self.toggle_actual_size_zoom();
+        } else if ctx.input(|i| i.key_pressed(Key::Plus) || i.key_pressed(Key::Equals)) {
+            self.zoom_factor = (self.zoom_factor * 1.25).clamp(0.1, 10.0);
+        } else if ctx.input(|i| i.key_pressed(Key::Minus)) {
+            self.zoom_factor = (self.zoom_factor / 1.25).clamp(0.1, 10.0);
+        } else if ctx.input(|i| i.key_pressed(Key::Space)) {
+            self.zoom_factor = 1.0;
+            self.image_position = egui::Vec2::ZERO;
+            self.set_status_message("Zoom: ajustar", 1.5);
         }
 
         self.handle_tag_keys(ctx);
+    }
+
+    pub(crate) fn toggle_actual_size_zoom(&mut self) {
+        if (self.zoom_factor - 1.0).abs() > 0.05 {
+            self.zoom_factor = 1.0;
+            self.image_position = egui::Vec2::ZERO;
+            self.set_status_message("Zoom: ajustar", 1.5);
+        } else {
+            let one_to_one = if self.last_fit_scale > f32::EPSILON {
+                (1.0 / self.last_fit_scale).clamp(1.0, 10.0)
+            } else {
+                2.0
+            };
+            self.zoom_factor = one_to_one;
+            self.set_status_message("Zoom: 100% (1:1)", 1.5);
+        }
     }
 
     /// L/W/D/U; devuelve `true` si consumió la tecla.

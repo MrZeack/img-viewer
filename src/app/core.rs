@@ -10,14 +10,16 @@ use std::sync::mpsc;
 use std::time::Instant;
 
 impl ImageViewerApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, config: Config) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        config: Config,
+        initial_dir: PathBuf,
+        initial_select: Option<PathBuf>,
+    ) -> Self {
         let (event_sender, event_receiver) = mpsc::channel();
         let event_bus = EventBus::new(event_sender, Some(cc.egui_ctx.clone()));
 
-        let current_dir = std::env::current_dir().unwrap_or_else(|err| {
-            eprintln!("Warning: Could not get current directory: {}", err);
-            PathBuf::from(".")
-        });
+        let current_dir = initial_dir;
         let image_cache = ImageCache::with_max_bytes(
             config.cache.image_capacity,
             config.cache.image_max_mb.saturating_mul(1024 * 1024),
@@ -38,6 +40,7 @@ impl ImageViewerApp {
             current_image: None,
             current_load_error: None,
             zoom_factor: 1.0,
+            last_fit_scale: 1.0,
             image_position: egui::Vec2::ZERO,
             image_cache,
             metadata_cache: create_metadata_cache(config.cache.metadata_capacity),
@@ -73,12 +76,13 @@ impl ImageViewerApp {
             rotation_manually_set: false,
             show_focus_peaking: config.view.show_focus_peaking,
             focus_peaking_cache: None,
+            histogram_cache: None,
             quality_multiplier: 1,
             config,
         };
 
         let dir = app.current_dir.clone();
-        app.start_folder_load(dir);
+        app.start_folder_load_selecting(dir, initial_select);
         app
     }
 

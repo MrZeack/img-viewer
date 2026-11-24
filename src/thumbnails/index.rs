@@ -186,11 +186,17 @@ impl ThumbIndex {
             (self.generation, self.entries.clone(), None)
         };
 
-        let tmp = self.dir.join("index.tmp");
-        fs::write(
-            &tmp,
-            encode_index(self.thumb_max, self.scoring_version, generation, &entries),
-        )?;
+        let tmp = self.dir.join(format!("index.{}.tmp", std::process::id()));
+        {
+            let mut file = File::create(&tmp)?;
+            file.write_all(&encode_index(
+                self.thumb_max,
+                self.scoring_version,
+                generation,
+                &entries,
+            ))?;
+            file.sync_all()?;
+        }
         fs::rename(&tmp, self.dir.join("index.bin"))?;
 
         if let Some((out, len)) = data {

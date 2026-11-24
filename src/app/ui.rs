@@ -43,10 +43,30 @@ impl eframe::App for ImageViewerApp {
             }
         }
 
+        // Handle dropped files/folders (drag & drop onto window)
+        let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .filter_map(|f| f.path.clone())
+                .collect()
+        });
+        if let Some(path) = dropped.into_iter().next() {
+            if path.is_dir() {
+                self.tags.clear_assignments();
+                self.undo_stack.clear();
+                self.start_folder_load(path);
+            } else if let Some(parent) = path.parent() {
+                self.tags.clear_assignments();
+                self.undo_stack.clear();
+                self.start_folder_load_selecting(parent.to_path_buf(), Some(path));
+            }
+        }
+
         TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    if ui.button("Open Folder...").clicked() {
+                ui.menu_button("Archivo", |ui| {
+                    if ui.button("Abrir carpeta…").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_folder() {
                             self.tags.clear_assignments();
                             self.undo_stack.clear();
@@ -54,14 +74,30 @@ impl eframe::App for ImageViewerApp {
                         }
                         ui.close_menu();
                     }
-                    if ui.button("Exit").clicked() {
-                        self.should_close = true;
-                    }
-                });
-                ui.menu_button("Ayuda", |ui| {
-                    if ui.button("Atajos de teclado (F1)").clicked() {
-                        self.toggle_help();
+                    if ui.button("Limpiar caché de miniaturas").clicked() {
+                        self.clear_thumbnail_service();
+                        if let Some(root) = crate::thumbnails::thumbs_root_dir() {
+                            match crate::thumbnails::clear_cache_dir(&root) {
+                                Ok(bytes) => {
+                                    let freed = format_file_size(bytes);
+                                    self.set_status_message(
+                                        &format!("Caché de miniaturas limpiado ({freed})"),
+                                        3.5,
+                                    );
+                                }
+                                Err(e) => {
+                                    self.set_status_message(
+                                        &format!("No se pudo limpiar el caché: {e}"),
+                                        3.5,
+                                    );
+                                }
+                            }
+                        }
                         ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("Salir").clicked() {
+                        self.should_close = true;
                     }
                 });
                 ui.menu_button("Orden", |ui| {
@@ -70,6 +106,12 @@ impl eframe::App for ImageViewerApp {
                             self.set_sort_order(order);
                             ui.close_menu();
                         }
+                    }
+                });
+                ui.menu_button("Ayuda", |ui| {
+                    if ui.button("Atajos de teclado (F1)").clicked() {
+                        self.toggle_help();
+                        ui.close_menu();
                     }
                 });
             });
@@ -185,6 +227,19 @@ impl eframe::App for ImageViewerApp {
                             None => {
                                 ui.label("Calculando…");
                             }
+                        }
+                    });
+
+                    ui.group(|ui| {
+                        ui.strong("HISTOGRAMA");
+                        if let Some(path) = self.current_path().cloned() {
+                            if let Some(hist) = self.ensure_histogram(&path) {
+                                hist.draw(ui);
+                            } else {
+                                ui.weak("Cargando…");
+                            }
+                        } else {
+                            ui.weak("—");
                         }
                     });
 
@@ -421,6 +476,7 @@ impl eframe::App for ImageViewerApp {
                 let scale_x = available_size.x / visual_image_size.x;
                 let scale_y = available_size.y / visual_image_size.y;
                 let fit_scale = scale_x.min(scale_y);
+                self.last_fit_scale = fit_scale;
 
                 // Apply zoom
                 let display_scale = fit_scale * self.zoom_factor;
@@ -594,6 +650,28 @@ impl eframe::App for ImageViewerApp {
                     }
                 }
 
+                // Handle double-click to toggle 100% (1:1) zoom centered on click point
+                if response.double_clicked() {
+                    if (self.zoom_factor - 1.0).abs() > 0.05 {
+                        self.zoom_factor = 1.0;
+                        self.image_position = egui::Vec2::ZERO;
+                        self.set_status_message("Zoom: ajustar", 1.5);
+                    } else if fit_scale > f32::EPSILON {
+                        let target_zoom = (1.0 / fit_scale).clamp(1.0, 10.0);
+                        let factor = target_zoom / self.zoom_factor;
+                        let (new_zoom, new_pos) = zoom_around_cursor(
+                            self.zoom_factor,
+                            factor,
+                            image_pos,
+                            ui.min_rect().min,
+                            response.interact_pointer_pos(),
+                        );
+                        self.zoom_factor = new_zoom;
+                        self.image_position = new_pos;
+                        self.set_status_message("Zoom: 100% (1:1)", 1.5);
+                    }
+                }
+
                 // Handle dragging
                 if response.dragged() {
                     self.image_position += response.drag_delta();
@@ -676,6 +754,26 @@ impl ImageViewerApp {
         self.focus_peaking_cache
             .as_ref()
             .map(|(_, _, tex)| tex.clone())
+    }
+
+    pub(crate) fn ensure_histogram(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Option<super::histogram::Histogram> {
+        let path_str = path.to_string_lossy();
+        let color_img = self.image_cache.get(&path_str)?;
+        let size = color_img.size;
+        let hit = self
+            .histogram_cache
+            .as_ref()
+            .is_some_and(|(cached_path, cached_size, _)| {
+                cached_path == path && *cached_size == size
+            });
+        if !hit {
+            let hist = super::histogram::Histogram::from_color_image(&color_img);
+            self.histogram_cache = Some((path.to_path_buf(), size, hist));
+        }
+        self.histogram_cache.as_ref().map(|(_, _, h)| h.clone())
     }
 
     /// Repaint throttle: only when needed

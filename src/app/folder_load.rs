@@ -15,6 +15,8 @@ pub(crate) struct FolderLoad {
     pub(crate) started: Instant,
     /// Archivos de imagen encontrados hasta ahora.
     pub(crate) found: Arc<AtomicUsize>,
+    /// Archivo concreto a seleccionar al terminar el escaneo (p. ej. argumento CLI o drag & drop).
+    select_file: Option<PathBuf>,
     receiver: Receiver<ScanResult>,
 }
 
@@ -31,6 +33,15 @@ impl ImageViewerApp {
 
     /// Empieza a escanear `dir`; la lista actual se vacía hasta que termine.
     pub(crate) fn start_folder_load(&mut self, dir: PathBuf) {
+        self.start_folder_load_selecting(dir, None);
+    }
+
+    /// Empieza a escanear `dir` y selecciona `select_file` si existe en los resultados.
+    pub(crate) fn start_folder_load_selecting(
+        &mut self,
+        dir: PathBuf,
+        select_file: Option<PathBuf>,
+    ) {
         let found = Arc::new(AtomicUsize::new(0));
         let (tx, receiver) = mpsc::channel();
         let (scan_dir, counter) = (dir.clone(), found.clone());
@@ -50,12 +61,14 @@ impl ImageViewerApp {
         self.current_index = 0;
         self.current_image = None;
         self.focus_peaking_cache = None;
+        self.histogram_cache = None;
         self.current_load_error = None;
         self.current_metadata = None;
         self.folder_load = Some(FolderLoad {
             dir,
             started: Instant::now(),
             found,
+            select_file,
             receiver,
         });
     }
@@ -70,7 +83,7 @@ impl ImageViewerApp {
             Err(mpsc::TryRecvError::Empty) => return false,
             Err(mpsc::TryRecvError::Disconnected) => Err("el escaneo terminó sin resultado".into()),
         };
-        self.folder_load = None;
+        let select_file = self.folder_load.take().and_then(|l| l.select_file);
         let entries = result.unwrap_or_else(|e| {
             eprintln!("Failed to read {}: {e}", self.current_dir.display());
             Vec::new()
@@ -78,7 +91,18 @@ impl ImageViewerApp {
         self.mtimes = entries.iter().cloned().collect();
         self.image_files = entries.into_iter().map(|(path, _)| path).collect();
         self.apply_sort();
-        self.current_index = 0;
+        self.current_index = select_file
+            .as_ref()
+            .and_then(|target| {
+                let canon_target = target.canonicalize().ok();
+                self.image_files.iter().position(|p| {
+                    p == target
+                        || canon_target
+                            .as_ref()
+                            .is_some_and(|ct| p.canonicalize().ok().as_ref() == Some(ct))
+                })
+            })
+            .unwrap_or(0);
         if !self.image_files.is_empty() {
             self.load_current_image(ctx);
         }
@@ -148,5 +172,22 @@ mod tests {
         wait_loaded(&mut app);
         assert!(app.image_files.is_empty());
         assert!(!app.is_loading());
+    }
+
+    #[test]
+    fn folder_load_selects_requested_file_after_sorting() {
+        let dir = temp_dir("select-file");
+        touch(&dir, "old.jpg", 100);
+        touch(&dir, "target.jpg", 200);
+        touch(&dir, "new.jpg", 300);
+
+        let target = dir.join("target.jpg");
+        let mut app = crate::app::state::test_app(vec![], 0);
+        app.start_folder_load_selecting(dir.clone(), Some(target.clone()));
+        wait_loaded(&mut app);
+
+        assert_eq!(app.current_index, 1);
+        assert_eq!(app.current_path(), Some(&target));
+        fs::remove_dir_all(dir).unwrap();
     }
 }
