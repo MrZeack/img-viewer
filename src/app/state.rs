@@ -102,6 +102,8 @@ pub struct ImageViewerApp {
 
     /// Whether to show focus peaking overlay
     pub(crate) show_focus_peaking: bool,
+    /// Cached focus-peaking texture keyed by (path, image pixel size)
+    pub(crate) focus_peaking_cache: Option<(PathBuf, [usize; 2], egui::TextureHandle)>,
 
     /// Quality multiplier for on-demand high resolution rendering (1: Normal, 2: 3x, 3: Original/Max)
     pub(crate) quality_multiplier: u8,
@@ -226,6 +228,7 @@ pub(crate) fn test_app(files: Vec<PathBuf>, current_index: usize) -> ImageViewer
         rotation: 0,
         rotation_manually_set: false,
         show_focus_peaking: false,
+        focus_peaking_cache: None,
         quality_multiplier: 1,
         config: crate::config::Config::default(),
     }

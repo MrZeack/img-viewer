@@ -64,6 +64,20 @@ impl GridState {
     }
 }
 
+/// Filas visibles a considerar al hacer scroll: si cambió el número de columnas,
+/// las filas guardadas del layout anterior ya no corresponden y se fuerza recalcular.
+pub(crate) fn visible_rows_for_scroll(
+    prev_cols: usize,
+    cols: usize,
+    visible: Range<usize>,
+) -> Range<usize> {
+    if prev_cols == cols {
+        visible
+    } else {
+        0..0
+    }
+}
+
 /// Índices de `keep` sin textura ni fallo: lo que hay que pedir al servicio.
 pub(crate) fn wanted_indices(
     keep: Range<usize>,
@@ -222,17 +236,14 @@ impl ImageViewerApp {
         let width = ui.available_width() - ui.spacing().scroll.allocated_width();
         let cols = grid_layout::columns(width, cell, GAP);
         let rows = grid_layout::row_count(total, cols);
+        let prev_cols = self.grid.cols;
         self.grid.cols = cols;
         self.grid.page_rows = ((ui.available_height() / pitch).floor() as usize).max(1);
 
         let mut scroll = egui::ScrollArea::vertical().auto_shrink([false, false]);
         if self.grid.scroll_to_selected {
             self.grid.scroll_to_selected = false;
-            let visible = if self.grid.cols == cols {
-                self.grid.visible_rows.clone()
-            } else {
-                0..0
-            };
+            let visible = visible_rows_for_scroll(prev_cols, cols, self.grid.visible_rows.clone());
             if let Some(offset) =
                 grid_layout::scroll_to_row(self.current_index / cols, visible, pitch)
             {
@@ -413,5 +424,11 @@ mod tests {
         assert_eq!(grid.cell, MAX_CELL);
         grid.zoom(0.0001);
         assert_eq!(grid.cell, MIN_CELL);
+    }
+
+    #[test]
+    fn visible_rows_for_scroll_resets_when_cols_change() {
+        assert_eq!(visible_rows_for_scroll(5, 5, 2..6), 2..6);
+        assert_eq!(visible_rows_for_scroll(5, 4, 2..6), 0..0);
     }
 }

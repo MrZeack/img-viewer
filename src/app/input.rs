@@ -81,6 +81,7 @@ impl ImageViewerApp {
             if self.show_focus_peaking {
                 self.set_status_message("Focus Peaking: ON", 2.0);
             } else {
+                self.focus_peaking_cache = None;
                 self.set_status_message("Focus Peaking: OFF", 2.0);
             }
             self.save_view_config();

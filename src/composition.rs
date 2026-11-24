@@ -87,22 +87,23 @@ impl CompositionType {
     }
 }
 
-const PHI_INV: f32 = 0.618;
+const PHI_INV: f32 = 0.618_034;
 
 /// Generates composition lines for a given composition type and image rectangle
 pub fn generate_composition_lines(
     composition_type: CompositionType,
     image_rect: Rect,
 ) -> Vec<CompositionLine> {
-    let stroke = Stroke::new(2.0_f32, Color32::WHITE);
-    let thin_stroke = Stroke::new(1.0_f32, Color32::WHITE);
+    let white = Color32::from_white_alpha(210);
+    let stroke = Stroke::new(1.5_f32, white);
+    let thin_stroke = Stroke::new(1.0_f32, Color32::from_white_alpha(175));
 
     match composition_type {
         CompositionType::RuleOfThirds => rule_of_thirds(image_rect, stroke),
         CompositionType::GoldenRatio => golden_ratio(image_rect, stroke),
         CompositionType::Diagonal => diagonal(image_rect, stroke),
         CompositionType::Triangle => triangle(image_rect, stroke),
-        CompositionType::GoldenSpiral => golden_spiral(image_rect, stroke),
+        CompositionType::GoldenSpiral => golden_spiral(image_rect, stroke, thin_stroke),
         CompositionType::CenterLines => center_lines(image_rect, stroke),
         CompositionType::PhiGrid => phi_grid(image_rect, thin_stroke),
         CompositionType::DynamicSymmetry => dynamic_symmetry(image_rect, stroke, thin_stroke),
@@ -213,32 +214,107 @@ fn triangle(rect: Rect, stroke: Stroke) -> Vec<CompositionLine> {
     ]
 }
 
-fn golden_spiral(rect: Rect, stroke: Stroke) -> Vec<CompositionLine> {
-    let w1 = rect.left() + rect.width() * PHI_INV;
-    let h1 = rect.top() + rect.height() * PHI_INV;
+fn golden_spiral(rect: Rect, stroke: Stroke, thin_stroke: Stroke) -> Vec<CompositionLine> {
+    use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
-    vec![
-        CompositionLine {
-            start: Pos2::new(w1, rect.top()),
-            end: Pos2::new(w1, rect.bottom()),
-            stroke,
-        },
-        CompositionLine {
-            start: Pos2::new(rect.left(), h1),
-            end: Pos2::new(rect.right(), h1),
-            stroke,
-        },
-        CompositionLine {
-            start: Pos2::new(w1, h1),
-            end: Pos2::new(rect.right(), h1),
-            stroke,
-        },
-        CompositionLine {
-            start: Pos2::new(w1, h1),
-            end: Pos2::new(w1, rect.bottom()),
-            stroke,
-        },
-    ]
+    let mut lines = Vec::new();
+    let mut cur = rect;
+    const STEPS: usize = 6;
+    const ARC_SEGMENTS: usize = 16;
+
+    for step in 0..STEPS {
+        let (l, r, t, b) = (cur.left(), cur.right(), cur.top(), cur.bottom());
+        let (w, h) = (cur.width(), cur.height());
+        if w < 2.0 || h < 2.0 {
+            break;
+        }
+        let (cx, cy, rx, ry, start_angle, end_angle, next_rect) = match step % 4 {
+            0 => {
+                let sx = l + w * PHI_INV;
+                lines.push(CompositionLine {
+                    start: Pos2::new(sx, t),
+                    end: Pos2::new(sx, b),
+                    stroke: thin_stroke,
+                });
+                (
+                    sx,
+                    b,
+                    sx - l,
+                    b - t,
+                    PI,
+                    PI + FRAC_PI_2,
+                    Rect::from_min_max(Pos2::new(sx, t), Pos2::new(r, b)),
+                )
+            }
+            1 => {
+                let sy = t + h * PHI_INV;
+                lines.push(CompositionLine {
+                    start: Pos2::new(l, sy),
+                    end: Pos2::new(r, sy),
+                    stroke: thin_stroke,
+                });
+                (
+                    l,
+                    sy,
+                    r - l,
+                    sy - t,
+                    PI + FRAC_PI_2,
+                    TAU,
+                    Rect::from_min_max(Pos2::new(l, sy), Pos2::new(r, b)),
+                )
+            }
+            2 => {
+                let sx = r - w * PHI_INV;
+                lines.push(CompositionLine {
+                    start: Pos2::new(sx, t),
+                    end: Pos2::new(sx, b),
+                    stroke: thin_stroke,
+                });
+                (
+                    sx,
+                    t,
+                    r - sx,
+                    b - t,
+                    0.0,
+                    FRAC_PI_2,
+                    Rect::from_min_max(Pos2::new(l, t), Pos2::new(sx, b)),
+                )
+            }
+            _ => {
+                let sy = b - h * PHI_INV;
+                lines.push(CompositionLine {
+                    start: Pos2::new(l, sy),
+                    end: Pos2::new(r, sy),
+                    stroke: thin_stroke,
+                });
+                (
+                    r,
+                    sy,
+                    r - l,
+                    b - sy,
+                    FRAC_PI_2,
+                    PI,
+                    Rect::from_min_max(Pos2::new(l, t), Pos2::new(r, sy)),
+                )
+            }
+        };
+
+        let mut prev = Pos2::new(cx + rx * start_angle.cos(), cy + ry * start_angle.sin());
+        for i in 1..=ARC_SEGMENTS {
+            let frac = i as f32 / ARC_SEGMENTS as f32;
+            let angle = start_angle + (end_angle - start_angle) * frac;
+            let next = Pos2::new(cx + rx * angle.cos(), cy + ry * angle.sin());
+            lines.push(CompositionLine {
+                start: prev,
+                end: next,
+                stroke,
+            });
+            prev = next;
+        }
+        cur = next_rect;
+    }
+
+    lines
 }
 
 fn center_lines(rect: Rect, stroke: Stroke) -> Vec<CompositionLine> {
@@ -283,31 +359,52 @@ fn phi_grid(rect: Rect, stroke: Stroke) -> Vec<CompositionLine> {
 }
 
 fn dynamic_symmetry(rect: Rect, thick_stroke: Stroke, thin_stroke: Stroke) -> Vec<CompositionLine> {
-    let mid_x = rect.center().x;
-    let mid_y = rect.center().y;
+    let (l, r, t, b) = (rect.left(), rect.right(), rect.top(), rect.bottom());
+    let (w, h) = (rect.width(), rect.height());
+    let mut lines = vec![
+        // Baroque and sinister main diagonals
+        CompositionLine {
+            start: Pos2::new(l, t),
+            end: Pos2::new(r, b),
+            stroke: thick_stroke,
+        },
+        CompositionLine {
+            start: Pos2::new(r, t),
+            end: Pos2::new(l, b),
+            stroke: thick_stroke,
+        },
+    ];
 
-    vec![
-        CompositionLine {
-            start: Pos2::new(rect.left(), rect.top()),
-            end: Pos2::new(rect.right(), rect.bottom()),
-            stroke: thick_stroke,
-        },
-        CompositionLine {
-            start: Pos2::new(rect.right(), rect.top()),
-            end: Pos2::new(rect.left(), rect.bottom()),
-            stroke: thick_stroke,
-        },
-        CompositionLine {
-            start: Pos2::new(rect.left(), mid_y),
-            end: Pos2::new(rect.right(), mid_y),
-            stroke: thin_stroke,
-        },
-        CompositionLine {
-            start: Pos2::new(mid_x, rect.top()),
-            end: Pos2::new(mid_x, rect.bottom()),
-            stroke: thin_stroke,
-        },
-    ]
+    if w > 0.0 && h > 0.0 {
+        // Four 90-degree reciprocal lines from each corner to the opposite edge.
+        let s = (w / h).min(h / w);
+        let dx = s * h;
+        let dy = s * w;
+        lines.extend([
+            CompositionLine {
+                start: Pos2::new(l, b),
+                end: Pos2::new(l + dx, b - dy),
+                stroke: thin_stroke,
+            },
+            CompositionLine {
+                start: Pos2::new(r, t),
+                end: Pos2::new(r - dx, t + dy),
+                stroke: thin_stroke,
+            },
+            CompositionLine {
+                start: Pos2::new(l, t),
+                end: Pos2::new(l + dx, t + dy),
+                stroke: thin_stroke,
+            },
+            CompositionLine {
+                start: Pos2::new(r, b),
+                end: Pos2::new(r - dx, b - dy),
+                stroke: thin_stroke,
+            },
+        ]);
+    }
+
+    lines
 }
 
 fn armature_of_rectangle(
@@ -315,28 +412,52 @@ fn armature_of_rectangle(
     thick_stroke: Stroke,
     thin_stroke: Stroke,
 ) -> Vec<CompositionLine> {
+    let (l, r, t, b) = (rect.left(), rect.right(), rect.top(), rect.bottom());
     let mid_x = rect.center().x;
     let mid_y = rect.center().y;
 
     vec![
+        // Main diagonals
         CompositionLine {
-            start: Pos2::new(rect.left(), rect.top()),
-            end: Pos2::new(rect.right(), rect.bottom()),
+            start: Pos2::new(l, t),
+            end: Pos2::new(r, b),
             stroke: thick_stroke,
         },
         CompositionLine {
-            start: Pos2::new(rect.right(), rect.top()),
-            end: Pos2::new(rect.left(), rect.bottom()),
+            start: Pos2::new(r, t),
+            end: Pos2::new(l, b),
             stroke: thick_stroke,
         },
+        // Horizontal and vertical midlines
         CompositionLine {
-            start: Pos2::new(mid_x, rect.top()),
-            end: Pos2::new(mid_x, rect.bottom()),
+            start: Pos2::new(mid_x, t),
+            end: Pos2::new(mid_x, b),
             stroke: thin_stroke,
         },
         CompositionLine {
-            start: Pos2::new(rect.left(), mid_y),
-            end: Pos2::new(rect.right(), mid_y),
+            start: Pos2::new(l, mid_y),
+            end: Pos2::new(r, mid_y),
+            stroke: thin_stroke,
+        },
+        // Diamond connecting edge midpoints
+        CompositionLine {
+            start: Pos2::new(mid_x, t),
+            end: Pos2::new(r, mid_y),
+            stroke: thin_stroke,
+        },
+        CompositionLine {
+            start: Pos2::new(r, mid_y),
+            end: Pos2::new(mid_x, b),
+            stroke: thin_stroke,
+        },
+        CompositionLine {
+            start: Pos2::new(mid_x, b),
+            end: Pos2::new(l, mid_y),
+            stroke: thin_stroke,
+        },
+        CompositionLine {
+            start: Pos2::new(l, mid_y),
+            end: Pos2::new(mid_x, t),
             stroke: thin_stroke,
         },
     ]
@@ -479,5 +600,51 @@ fn aspect_ratio_guides(rect: Rect, stroke: Stroke) -> Vec<CompositionLine> {
                 stroke,
             },
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn golden_spiral_generates_curved_arc_segments() {
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(1200.0, 800.0));
+        let lines = generate_composition_lines(CompositionType::GoldenSpiral, rect);
+        assert!(
+            lines.len() > 30,
+            "expected curved spiral polyline, got {} segments",
+            lines.len()
+        );
+    }
+
+    #[test]
+    fn dynamic_symmetry_and_armature_are_distinct() {
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(1200.0, 800.0));
+        let dyn_sym = generate_composition_lines(CompositionType::DynamicSymmetry, rect);
+        let armature = generate_composition_lines(CompositionType::ArmatureOfRectangle, rect);
+        let to_pts = |lines: &[CompositionLine]| -> Vec<((i32, i32), (i32, i32))> {
+            let mut v: Vec<_> = lines
+                .iter()
+                .map(|l| {
+                    let a = (l.start.x.round() as i32, l.start.y.round() as i32);
+                    let b = (l.end.x.round() as i32, l.end.y.round() as i32);
+                    if a <= b {
+                        (a, b)
+                    } else {
+                        (b, a)
+                    }
+                })
+                .collect();
+            v.sort();
+            v
+        };
+        assert_ne!(
+            to_pts(&dyn_sym),
+            to_pts(&armature),
+            "Dynamic Symmetry and Armature of Rectangle must not be identical"
+        );
+        assert!(dyn_sym.len() >= 6, "Dynamic Symmetry needs reciprocals");
+        assert!(armature.len() >= 8, "Armature needs diamond/eye lines");
     }
 }

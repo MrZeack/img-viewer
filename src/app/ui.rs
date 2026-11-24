@@ -397,31 +397,16 @@ impl eframe::App for ImageViewerApp {
         }
 
         CentralPanel::default().show(ctx, |ui| {
-            let focus_texture_storage;
-            let current_path_str = self.current_path().map(|p| p.to_string_lossy().to_string());
-
             let active_texture = if self.show_focus_peaking {
-                if let Some(path_str) = &current_path_str {
-                    if let Some(color_img) = self.image_cache.get(path_str) {
-                        let threshold = 30.0;
-                        let peaked_img = apply_focus_peaking(&color_img, threshold);
-                        focus_texture_storage = ctx.load_texture(
-                            format!("{}_focus", path_str),
-                            peaked_img,
-                            egui::TextureOptions::default(),
-                        );
-                        Some(&focus_texture_storage)
-                    } else {
-                        self.current_image.as_ref()
-                    }
-                } else {
-                    self.current_image.as_ref()
-                }
+                self.current_path()
+                    .cloned()
+                    .and_then(|path| self.ensure_focus_peaking_texture(ctx, &path))
+                    .or_else(|| self.current_image.clone())
             } else {
-                self.current_image.as_ref()
+                self.current_image.clone()
             };
 
-            if let Some(texture) = active_texture {
+            if let Some(texture) = active_texture.as_ref() {
                 let image_size = texture.size_vec2();
                 let available_size = ui.available_size();
 
@@ -567,12 +552,18 @@ impl eframe::App for ImageViewerApp {
                         lines
                     };
 
-                    // Shift cached local lines to current image position
+                    // Shift cached local lines to current image position, with dark outline for visibility
                     let offset = image_rect.min.to_vec2();
+                    let painter = ui.painter();
                     for line in lines {
                         let start = line.start + offset;
                         let end = line.end + offset;
-                        ui.painter().line_segment([start, end], line.stroke);
+                        let shadow = egui::Stroke::new(
+                            line.stroke.width + 1.5,
+                            egui::Color32::from_black_alpha(120),
+                        );
+                        painter.line_segment([start, end], shadow);
+                        painter.line_segment([start, end], line.stroke);
                     }
                 }
 
@@ -590,16 +581,16 @@ impl eframe::App for ImageViewerApp {
                         zoom_change = Some(pinch_zoom);
                     }
 
-                    if let Some(zoom_factor) = zoom_change {
-                        let old_zoom = self.zoom_factor;
-                        self.zoom_factor = (self.zoom_factor * zoom_factor).clamp(0.1, 10.0);
-
-                        // Zoom towards mouse cursor
-                        if let Some(pointer_pos) = response.hover_pos() {
-                            let zoom_ratio = self.zoom_factor / old_zoom;
-                            let relative_pos = pointer_pos - image_rect.min;
-                            self.image_position += relative_pos * (1.0 - zoom_ratio);
-                        }
+                    if let Some(factor) = zoom_change {
+                        let (new_zoom, new_pos) = zoom_around_cursor(
+                            self.zoom_factor,
+                            factor,
+                            image_pos,
+                            ui.min_rect().min,
+                            response.hover_pos(),
+                        );
+                        self.zoom_factor = new_zoom;
+                        self.image_position = new_pos;
                     }
                 }
 
@@ -635,7 +626,58 @@ impl eframe::App for ImageViewerApp {
     }
 }
 
+/// Computes `(zoom_factor, image_position)` zooming smoothly around `pointer_pos`
+/// starting from the currently displayed `current_display_pos` (avoiding jumps from centered view).
+pub(crate) fn zoom_around_cursor(
+    old_zoom: f32,
+    factor: f32,
+    current_display_pos: egui::Vec2,
+    panel_min: egui::Pos2,
+    pointer_pos: Option<egui::Pos2>,
+) -> (f32, egui::Vec2) {
+    let new_zoom = (old_zoom * factor).clamp(0.1, 10.0);
+    let mut new_pos = current_display_pos;
+    if let Some(ptr) = pointer_pos {
+        let zoom_ratio = new_zoom / old_zoom;
+        let image_origin = panel_min + current_display_pos;
+        let relative_pos = ptr - image_origin;
+        new_pos += relative_pos * (1.0 - zoom_ratio);
+    }
+    (new_zoom, new_pos)
+}
+
 impl ImageViewerApp {
+    /// Returns a cached focus-peaking texture for `path`, rebuilding only when the path or
+    /// cached image resolution changes.
+    pub(crate) fn ensure_focus_peaking_texture(
+        &mut self,
+        ctx: &Context,
+        path: &std::path::Path,
+    ) -> Option<egui::TextureHandle> {
+        let path_str = path.to_string_lossy();
+        let color_img = self.image_cache.get(&path_str)?;
+        let size = color_img.size;
+        let hit = self
+            .focus_peaking_cache
+            .as_ref()
+            .is_some_and(|(cached_path, cached_size, _)| {
+                cached_path == path && *cached_size == size
+            });
+        if !hit {
+            const THRESHOLD: f32 = 30.0;
+            let peaked_img = apply_focus_peaking(&color_img, THRESHOLD);
+            let texture = ctx.load_texture(
+                format!("{}_focus_{}x{}", path_str, size[0], size[1]),
+                peaked_img,
+                egui::TextureOptions::default(),
+            );
+            self.focus_peaking_cache = Some((path.to_path_buf(), size, texture));
+        }
+        self.focus_peaking_cache
+            .as_ref()
+            .map(|(_, _, tex)| tex.clone())
+    }
+
     /// Repaint throttle: only when needed
     fn schedule_repaint(&self, ctx: &Context) {
         // El contador de indexación avanza sin eventos de UI: refrescarlo con calma.
@@ -668,5 +710,47 @@ impl ImageViewerApp {
             };
             ctx.request_repaint_after(Duration::from_millis(interval));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zoom_around_cursor_preserves_point_under_cursor_from_centered_start() {
+        let panel_min = egui::pos2(0.0, 24.0);
+        let centered_pos = egui::vec2(200.0, 100.0);
+        let pointer = egui::pos2(500.0, 300.0);
+        let (new_zoom, new_pos) =
+            zoom_around_cursor(1.0, 2.0, centered_pos, panel_min, Some(pointer));
+        assert!((new_zoom - 2.0).abs() < 1e-5);
+        // Before zoom: pointer relative to image origin = (500-200, 300-124) = (300, 176).
+        // After 2x zoom: image origin moves so same image point stays under pointer.
+        let before_rel = pointer - (panel_min + centered_pos);
+        let after_rel = pointer - (panel_min + new_pos);
+        assert!((after_rel.x - before_rel.x * 2.0).abs() < 1e-3);
+        assert!((after_rel.y - before_rel.y * 2.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn focus_peaking_cache_reuses_texture_until_path_or_size_changes() {
+        let path = std::path::PathBuf::from("/tmp/a.jpg");
+        let mut app = super::super::state::test_app(vec![path.clone()], 0);
+        let ctx = Context::default();
+        let img1 = std::sync::Arc::new(egui::ColorImage::new([16, 16], egui::Color32::GRAY));
+        app.image_cache
+            .put_if_better(path.to_string_lossy().to_string(), img1, Some(1024));
+
+        let id1 = app.ensure_focus_peaking_texture(&ctx, &path).unwrap().id();
+        let id2 = app.ensure_focus_peaking_texture(&ctx, &path).unwrap().id();
+        assert_eq!(id1, id2, "must reuse cached texture on subsequent frames");
+
+        // Upgrade resolution -> cache key size changes -> rebuilds texture.
+        let img2 = std::sync::Arc::new(egui::ColorImage::new([32, 32], egui::Color32::GRAY));
+        app.image_cache
+            .put_if_better(path.to_string_lossy().to_string(), img2, Some(2048));
+        let id3 = app.ensure_focus_peaking_texture(&ctx, &path).unwrap().id();
+        assert_ne!(id1, id3, "resolution upgrade must rebuild focus texture");
     }
 }

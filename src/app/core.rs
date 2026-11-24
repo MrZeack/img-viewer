@@ -69,6 +69,7 @@ impl ImageViewerApp {
             rotation: 0,
             rotation_manually_set: false,
             show_focus_peaking: config.view.show_focus_peaking,
+            focus_peaking_cache: None,
             quality_multiplier: 1,
             config,
         };
