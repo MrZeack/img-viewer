@@ -200,7 +200,11 @@ impl ThumbnailService {
 
 impl Drop for ThumbnailService {
     fn drop(&mut self) {
-        self.shared.stop.store(true, Ordering::SeqCst);
+        {
+            // Con el candado tomado, el aviso no cae entre la comprobación del hilo y su `wait`.
+            let _state = lock(&self.shared.state);
+            self.shared.stop.store(true, Ordering::SeqCst);
+        }
         self.shared.work.notify_all();
         for worker in self.workers.drain(..) {
             let _ = worker.join();

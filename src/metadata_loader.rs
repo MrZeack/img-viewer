@@ -70,7 +70,11 @@ impl MetadataLoader {
 
 impl Drop for MetadataLoader {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
+        {
+            // Con el candado tomado, el aviso no cae entre la comprobación del hilo y su `wait`.
+            let _target = self.target.lock().unwrap_or_else(|e| e.into_inner());
+            self.stop.store(true, Ordering::SeqCst);
+        }
         self.condvar.notify_all();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();

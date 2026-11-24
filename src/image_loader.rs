@@ -104,7 +104,11 @@ struct LoaderInner {
 
 impl Drop for LoaderInner {
     fn drop(&mut self) {
-        self.shared.stop.store(true, Ordering::SeqCst);
+        {
+            // Con el candado tomado, el aviso no cae entre la comprobación del hilo y su `wait`.
+            let _queue = lock(&self.shared.queue);
+            self.shared.stop.store(true, Ordering::SeqCst);
+        }
         self.shared.work.notify_all();
         let mut workers = lock(&self.workers);
         for handle in workers.drain(..) {
@@ -755,6 +759,43 @@ mod tests {
             "got {:?}",
             loaded.image.size
         );
+    }
+
+    /// Crea y destruye en bucle: un aviso de parada perdido deja `Drop` esperando para siempre.
+    fn assert_no_hang(name: &str, iterations: usize, make_and_drop: fn()) {
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for _ in 0..iterations {
+                make_and_drop();
+            }
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap_or_else(|_| panic!("{name}: Drop se quedó esperando a sus hilos"));
+    }
+
+    #[test]
+    fn dropping_workers_never_loses_the_stop_signal() {
+        assert_no_hang("ImageLoader", 3000, || {
+            let (tx, _rx) = mpsc::channel();
+            drop(ImageLoader::new(2, EventBus::new(tx, None)));
+        });
+        assert_no_hang("MetadataLoader", 3000, || {
+            let (tx, _rx) = mpsc::channel();
+            drop(crate::metadata_loader::MetadataLoader::new(EventBus::new(
+                tx, None,
+            )));
+        });
+        assert_no_hang("ThumbnailService", 3000, || {
+            drop(crate::thumbnails::service::ThumbnailService::start(
+                Vec::new(),
+                None,
+                64,
+                2,
+                None,
+            ));
+        });
     }
 
     #[test]
