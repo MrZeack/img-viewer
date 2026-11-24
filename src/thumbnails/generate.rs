@@ -233,24 +233,37 @@ fn find_jpeg_end_structured(data: &[u8], start: usize) -> Option<usize> {
 /// JPEG embebido más grande que empieza dentro de los primeros `limit` bytes.
 pub fn bounded_preview_jpeg(data: &[u8], limit: usize) -> Option<&[u8]> {
     let scan_end = limit.min(data.len());
-    let mut best: Option<(usize, usize)> = None;
+    let mut structured: Option<(usize, usize)> = None;
+    let mut loose: Option<(usize, usize)> = None;
+    let longer = |best: Option<(usize, usize)>, s: usize, e: usize| {
+        if best.is_none_or(|(bs, be)| e - s > be - bs) {
+            Some((s, e))
+        } else {
+            best
+        }
+    };
     let mut i = 0;
     while i + 1 < scan_end {
-        if data[i] == 0xFF && data[i + 1] == 0xD8 {
-            match find_jpeg_end(data, i) {
-                Some(end) => {
-                    if best.is_none_or(|(s, e)| end - i > e - s) {
-                        best = Some((i, end));
-                    }
-                    i = end;
-                }
-                None => break,
-            }
-        } else {
+        if data[i] != 0xFF || data[i + 1] != 0xD8 {
             i += 1;
+            continue;
+        }
+        let well_formed = (data.get(i + 2) == Some(&0xFF))
+            .then(|| find_jpeg_end_structured(data, i))
+            .flatten();
+        if let Some(end) = well_formed {
+            structured = longer(structured, i, end);
+            i = end;
+        } else if let Some(end) = find_jpeg_end(data, i) {
+            // Sin estructura válida puede ser un `FF D8` suelto en datos del sensor: se recuerda
+            // como último recurso sin saltar su tramo, que podría contener la vista previa real.
+            loose = longer(loose, i, end);
+            i += 2;
+        } else {
+            break;
         }
     }
-    best.map(|(s, e)| &data[s..e])
+    structured.or(loose).map(|(s, e)| &data[s..e])
 }
 
 fn orientation_of(exif: &exif::Exif) -> Option<u32> {
@@ -412,6 +425,23 @@ mod tests {
         assert_eq!(bounded_preview_jpeg(&data, data.len()).unwrap().len(), 504);
         assert_eq!(bounded_preview_jpeg(&data, big_start).unwrap().len(), 104);
         assert_eq!(bounded_preview_jpeg(&data[..small_start], 1000), None);
+    }
+
+    #[test]
+    fn bounded_preview_prefers_well_formed_jpeg_over_stray_markers() {
+        // ARW reescrito (p. ej. por exiftool): la vista previa queda tras los datos del sensor,
+        // donde aparecen `FF D8` sueltos sin estructura JPEG.
+        let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xDA, 0x00, 0x04, 0x01, 0x02];
+        jpeg.extend(vec![0xAA; 64]);
+        jpeg.extend([0xFF, 0xD9]);
+        let mut blob = vec![0x11; 16];
+        blob.extend([0xFF, 0xD8, 0x00, 0x13]); // marcador suelto en datos del sensor
+        blob.extend(vec![0x22; 500]);
+        let start = blob.len();
+        blob.extend(&jpeg);
+        blob.extend(vec![0x33; 16]);
+        let found = bounded_preview_jpeg(&blob, blob.len()).unwrap();
+        assert_eq!(found, &blob[start..start + jpeg.len()]);
     }
 
     #[test]
