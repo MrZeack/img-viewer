@@ -368,31 +368,6 @@ fn decode_sensor_path(path: &Path) -> Option<DynamicImage> {
     .flatten()
 }
 
-/// Demosaico lineal con quickraw a sRGB desde memoria. La orientación la aplica la vista con el EXIF.
-/// `None` si el modelo no está soportado o quickraw entra en pánico.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn decode_sensor(data: Vec<u8>) -> Option<DynamicImage> {
-    use quickraw::{data, DemosaicingMethod, Export, Input, Output, OutputType};
-    if data.len() < 16 {
-        return None;
-    }
-    std::panic::catch_unwind(move || {
-        let output = Output::new(
-            DemosaicingMethod::Linear,
-            data::XYZ2SRGB,
-            data::GAMMA_SRGB,
-            OutputType::Raw8,
-            true,
-            false,
-        );
-        let export = Export::new(Input::ByBuffer(data), output).ok()?;
-        let (pixels, w, h) = export.export_8bit_image();
-        image::RgbImage::from_raw(w as u32, h as u32, pixels).map(DynamicImage::ImageRgb8)
-    })
-    .ok()
-    .flatten()
-}
-
 fn decode_and_fit(
     jpg: &[u8],
     target_size: Option<(u32, u32)>,
@@ -885,9 +860,16 @@ mod raw_tests {
     }
 
     #[test]
-    fn garbage_sensor_data_does_not_panic() {
-        assert!(decode_sensor(Vec::new()).is_none());
-        assert!(decode_sensor(vec![0xFF; 4096]).is_none());
+    fn garbage_sensor_file_does_not_panic() {
+        let dir = std::env::temp_dir().join(format!("ivt-sensor-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (empty, junk) = (dir.join("empty.arw"), dir.join("junk.arw"));
+        std::fs::write(&empty, b"").unwrap();
+        std::fs::write(&junk, vec![0xFF; 4096]).unwrap();
+        assert!(decode_sensor_path(&empty).is_none());
+        assert!(decode_sensor_path(&junk).is_none());
+        assert!(decode_sensor_path(&dir.join("missing.arw")).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
