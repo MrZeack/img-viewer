@@ -22,11 +22,10 @@ impl ImageViewerApp {
         let image_loader = ImageLoader::new(config.performance.loader_threads, event_bus.clone());
         let preview_dim = config.performance.max_cached_dimension.min(1024);
         let preloader = ImagePreloader::new(
+            image_loader.clone(),
             image_cache.clone(),
             config.performance.preload_distance,
-            event_bus.clone(),
             preview_dim,
-            image_loader.pending_requests(),
         );
 
         let mut app = Self {
@@ -34,6 +33,7 @@ impl ImageViewerApp {
             image_files: Vec::new(),
             current_index: 0,
             current_image: None,
+            current_load_error: None,
             zoom_factor: 1.0,
             image_position: egui::Vec2::ZERO,
             image_cache,
@@ -82,23 +82,12 @@ impl ImageViewerApp {
         self.load_current_image_with_reset(ctx, true);
     }
 
-    pub(crate) fn load_current_image_with_reset(&mut self, ctx: &Context, reset_view: bool) {
-        let Some(current_path) = self.current_path().cloned() else {
-            self.current_image = None;
-            self.current_metadata = None;
-            return;
-        };
-        let path_str = current_path.to_string_lossy().to_string();
-
-        // Calculate target dimensions based on quality multiplier
-        let target_dim = match self.quality_multiplier {
-            2 => {
-                let d = (self.max_cached_dimension * 3).min(6144);
-                Some((d, d))
-            }
-            3 => None, // Full original native resolution
+    pub(crate) fn desired_target_dim(&self, path: &std::path::Path) -> Option<u32> {
+        match self.quality_multiplier {
+            2 => Some((self.max_cached_dimension * 3).min(6144)),
+            3 => None,
             _ => {
-                let ext = current_path
+                let ext = path
                     .extension()
                     .and_then(|e| e.to_str())
                     .unwrap_or("")
@@ -108,28 +97,40 @@ impl ImageViewerApp {
                 } else {
                     self.max_cached_dimension
                 };
-                Some((d, d))
+                Some(d)
             }
-        };
+        }
+    }
 
-        // Check cache only for standard quality level 1
-        if self.quality_multiplier == 1 {
-            if let Some(cached_image_arc) = self.image_cache.get(&path_str) {
-                self.current_image = Some(ctx.load_texture(
-                    &path_str,
-                    cached_image_arc.clone(),
-                    egui::TextureOptions::default(),
-                ));
-            } else {
-                self.image_loader
-                    .load_image(&current_path, target_dim, true);
-                self.loading_requests
-                    .insert(current_path.clone(), Instant::now());
+    pub(crate) fn load_current_image_with_reset(&mut self, ctx: &Context, reset_view: bool) {
+        let Some(current_path) = self.current_path().cloned() else {
+            self.current_image = None;
+            self.current_load_error = None;
+            self.current_metadata = None;
+            return;
+        };
+        self.current_load_error = None;
+        let path_str = current_path.to_string_lossy().to_string();
+        let target_dim = self.desired_target_dim(&current_path);
+        let target_size = target_dim.map(|d| (d, d));
+
+        let cached = self.image_cache.get_entry(&path_str);
+        let mut needs_load = true;
+        if let Some(entry) = cached {
+            // Show whatever resolution is already cached immediately to avoid blank frames.
+            self.current_image = Some(ctx.load_texture(
+                &path_str,
+                entry.image.clone(),
+                egui::TextureOptions::default(),
+            ));
+            if entry.satisfies(target_dim) {
+                needs_load = false;
             }
-        } else {
-            // For HQ levels (2 or 3), directly trigger fresh load for high resolution
+        }
+
+        if needs_load {
             self.image_loader
-                .load_image(&current_path, target_dim, true);
+                .load_image(&current_path, target_size, true);
             self.loading_requests
                 .insert(current_path.clone(), Instant::now());
         }
@@ -181,18 +182,48 @@ impl ImageViewerApp {
     pub(crate) fn process_events(&mut self, ctx: &Context) {
         while let Ok(event) = self.event_receiver.try_recv() {
             match event {
-                ViewerEvent::ImageLoaded(path, image_arc) => {
+                ViewerEvent::ImageLoaded {
+                    path,
+                    image,
+                    target_dim,
+                } => {
                     let path_str = path.to_string_lossy().to_string();
-                    self.image_cache.put(path_str.clone(), image_arc.clone());
+                    let updated =
+                        self.image_cache
+                            .put_if_better(path_str.clone(), image.clone(), target_dim);
 
                     if should_apply_event(self.current_path(), &path) {
-                        self.current_image = Some(ctx.load_texture(
-                            path_str,
-                            image_arc,
-                            egui::TextureOptions::default(),
-                        ));
+                        self.current_load_error = None;
+                        let desired = self.desired_target_dim(&path);
+                        let best = self
+                            .image_cache
+                            .get_entry(&path_str)
+                            .map(|e| e.image)
+                            .unwrap_or(image);
+                        if updated || self.current_image.is_none() {
+                            self.current_image = Some(ctx.load_texture(
+                                path_str,
+                                best,
+                                egui::TextureOptions::default(),
+                            ));
+                        }
+                        let satisfied = self
+                            .image_cache
+                            .get_entry(&path.to_string_lossy())
+                            .is_some_and(|e| e.satisfies(desired));
+                        if satisfied {
+                            self.loading_requests.remove(&path);
+                        }
+                    } else {
+                        self.loading_requests.remove(&path);
                     }
+                }
+                ViewerEvent::ImageLoadFailed { path, error } => {
                     self.loading_requests.remove(&path);
+                    if should_apply_event(self.current_path(), &path) {
+                        self.current_image = None;
+                        self.current_load_error = Some(error);
+                    }
                 }
                 ViewerEvent::MetadataReady(path, metadata) => {
                     let metadata = *metadata;
@@ -280,5 +311,27 @@ mod tests {
     fn should_apply_event_rejects_missing_current_path() {
         let event_path = PathBuf::from("/tmp/stale.jpg");
         assert!(!should_apply_event(None, &event_path));
+    }
+
+    #[test]
+    fn failed_load_clears_loading_request_and_sets_error() {
+        let p = PathBuf::from("/tmp/broken.jpg");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = super::super::state::test_app(vec![p.clone()], 0);
+        app.event_receiver = rx;
+        app.loading_requests
+            .insert(p.clone(), std::time::Instant::now());
+
+        tx.send(crate::event::ViewerEvent::ImageLoadFailed {
+            path: p.clone(),
+            error: "corrupt file".into(),
+        })
+        .unwrap();
+
+        let ctx = eframe::egui::Context::default();
+        app.process_events(&ctx);
+
+        assert!(!app.loading_requests.contains_key(&p));
+        assert_eq!(app.current_load_error.as_deref(), Some("corrupt file"));
     }
 }

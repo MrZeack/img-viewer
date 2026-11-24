@@ -610,7 +610,15 @@ impl eframe::App for ImageViewerApp {
             } else {
                 ui.centered_and_justified(|ui| {
                     if self.image_files.is_empty() {
-                        ui.label("No images found in current directory");
+                        ui.label("No se encontraron imágenes en esta carpeta");
+                    } else if let Some(error) = &self.current_load_error {
+                        ui.vertical_centered(|ui| {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(230, 90, 90),
+                                "No se pudo cargar la imagen",
+                            );
+                            ui.weak(error);
+                        });
                     } else {
                         ui.horizontal_centered(|ui| {
                             ui.spinner();

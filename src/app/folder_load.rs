@@ -49,6 +49,7 @@ impl ImageViewerApp {
         self.mtimes.clear();
         self.current_index = 0;
         self.current_image = None;
+        self.current_load_error = None;
         self.current_metadata = None;
         self.folder_load = Some(FolderLoad {
             dir,

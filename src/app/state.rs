@@ -22,6 +22,8 @@ pub struct ImageViewerApp {
 
     /// Currently displayed image
     pub(crate) current_image: Option<egui::TextureHandle>,
+    /// Error message when the current image fails to load
+    pub(crate) current_load_error: Option<String>,
     /// Current zoom factor
     pub(crate) zoom_factor: f32,
     /// Current position of the image view
@@ -185,18 +187,13 @@ pub(crate) fn test_app(files: Vec<PathBuf>, current_index: usize) -> ImageViewer
     let (tx, rx) = mpsc::channel::<ViewerEvent>();
     let event_bus = EventBus::new(tx, None);
     let image_loader = ImageLoader::new(1, event_bus.clone());
-    let preloader = ImagePreloader::new(
-        ImageCache::new(2),
-        1,
-        event_bus.clone(),
-        1,
-        image_loader.pending_requests(),
-    );
+    let preloader = ImagePreloader::new(image_loader.clone(), ImageCache::new(2), 1, 1);
     ImageViewerApp {
         current_dir: PathBuf::from("/tmp"),
         image_files: files,
         current_index,
         current_image: None,
+        current_load_error: None,
         zoom_factor: 1.0,
         image_position: egui::Vec2::ZERO,
         image_cache: ImageCache::new(2),

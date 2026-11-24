@@ -1,101 +1,232 @@
-//! Asynchronous image loading with multi-threading and caching
+//! Asynchronous image loading with prioritized work queue, scaling and caching.
 use crate::errors::AppError;
 use crate::event::{EventBus, ViewerEvent};
 use egui::ColorImage;
 use image::{DynamicImage, ImageFormat};
 use libheif_rs::{HeifContext, LibHeif};
-use rayon::prelude::*;
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::thread;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::thread::{self, JoinHandle};
 
-/// Represents a successfully loaded image
+const MAX_PRELOAD_QUEUE: usize = 16;
+
+/// Represents a successfully loaded image.
 #[derive(Debug, Clone)]
 pub struct LoadedImage {
-    /// The loaded image as an egui ColorImage
+    /// The loaded image as an egui ColorImage.
     pub image: ColorImage,
 }
 
-pub struct ImageLoader {
-    sender: mpsc::Sender<LoadRequest>,
-    pending: Arc<Mutex<HashSet<PathBuf>>>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoadPriority {
+    Current,
+    Preload,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct LoadRequest {
-    path: std::path::PathBuf,
+    path: PathBuf,
     target_size: Option<(u32, u32)>,
     high_quality: bool,
 }
 
-impl ImageLoader {
-    pub fn new(num_threads: usize, event_bus: EventBus) -> Self {
-        Self::with_pending(num_threads, event_bus, Arc::new(Mutex::new(HashSet::new())))
+type RequestKey = (PathBuf, Option<(u32, u32)>);
+
+#[derive(Default)]
+struct QueueState {
+    current: Vec<LoadRequest>,
+    preload: VecDeque<LoadRequest>,
+    in_flight: HashSet<RequestKey>,
+}
+
+impl QueueState {
+    fn key(req: &LoadRequest) -> RequestKey {
+        (req.path.clone(), req.target_size)
     }
 
-    pub fn with_pending(
-        num_threads: usize,
-        event_bus: EventBus,
-        pending: Arc<Mutex<HashSet<PathBuf>>>,
-    ) -> Self {
-        let (tx, rx) = mpsc::channel::<LoadRequest>();
-        let pending_worker = pending.clone();
+    fn contains(&self, key: &RequestKey) -> bool {
+        self.in_flight.contains(key)
+            || self.current.iter().any(|r| Self::key(r) == *key)
+            || self.preload.iter().any(|r| Self::key(r) == *key)
+    }
 
-        thread::spawn(move || {
-            let pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(num_threads)
-                .build()
-                .expect("Failed to build image loader thread pool");
+    fn enqueue(&mut self, req: LoadRequest, priority: LoadPriority) -> bool {
+        let key = Self::key(&req);
+        if self.contains(&key) {
+            return false;
+        }
+        match priority {
+            LoadPriority::Current => {
+                // Keep only current-path requests (e.g. normal + HQ upgrade) and drop obsolete images.
+                self.current.retain(|r| r.path == req.path);
+                self.current.push(req);
+            }
+            LoadPriority::Preload => {
+                if self.preload.len() >= MAX_PRELOAD_QUEUE {
+                    self.preload.pop_front();
+                }
+                self.preload.push_back(req);
+            }
+        }
+        true
+    }
 
-            pool.install(|| {
-                rx.into_iter().par_bridge().for_each(|request| {
-                    let path = request.path.clone();
-                    let result =
-                        load_image_sync(request).map(|loaded_image| Arc::new(loaded_image.image));
-                    if let Ok(image_arc) = result {
-                        event_bus.publish(ViewerEvent::ImageLoaded(path.clone(), image_arc));
-                    }
-                    // mark request as completed (success or error)
-                    if let Ok(mut set) = pending_worker.lock() {
-                        set.remove(&path);
-                    }
-                });
-            });
-        });
+    fn pop(&mut self) -> Option<LoadRequest> {
+        let req = self.current.pop().or_else(|| self.preload.pop_front())?;
+        self.in_flight.insert(Self::key(&req));
+        Some(req)
+    }
 
-        Self {
-            sender: tx,
-            pending,
+    fn finish(&mut self, key: &RequestKey) {
+        self.in_flight.remove(key);
+    }
+}
+
+struct LoaderShared {
+    queue: Mutex<QueueState>,
+    work: Condvar,
+    stop: AtomicBool,
+    event_bus: EventBus,
+}
+
+struct LoaderInner {
+    shared: Arc<LoaderShared>,
+    workers: Mutex<Vec<JoinHandle<()>>>,
+}
+
+impl Drop for LoaderInner {
+    fn drop(&mut self) {
+        self.shared.stop.store(true, Ordering::SeqCst);
+        self.shared.work.notify_all();
+        let mut workers = lock(&self.workers);
+        for handle in workers.drain(..) {
+            let _ = handle.join();
         }
     }
+}
 
-    pub fn pending_requests(&self) -> Arc<Mutex<HashSet<PathBuf>>> {
-        self.pending.clone()
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[derive(Clone)]
+pub struct ImageLoader {
+    inner: Arc<LoaderInner>,
+}
+
+impl ImageLoader {
+    pub fn new(num_threads: usize, event_bus: EventBus) -> Self {
+        let shared = Arc::new(LoaderShared {
+            queue: Mutex::new(QueueState::default()),
+            work: Condvar::new(),
+            stop: AtomicBool::new(false),
+            event_bus,
+        });
+
+        let threads = num_threads.max(1);
+        let workers = (0..threads)
+            .map(|n| {
+                let shared = Arc::clone(&shared);
+                thread::Builder::new()
+                    .name(format!("img-load-{n}"))
+                    .spawn(move || worker_loop(&shared))
+                    .expect("Failed to spawn image loader worker")
+            })
+            .collect();
+
+        Self {
+            inner: Arc::new(LoaderInner {
+                shared,
+                workers: Mutex::new(workers),
+            }),
+        }
     }
 
     pub fn load_image(&self, path: &Path, target_size: Option<(u32, u32)>, high_quality: bool) {
-        let p = path.to_path_buf();
-        if let Ok(mut set) = self.pending.lock() {
-            if set.contains(&p) {
-                return;
-            }
-            set.insert(p.clone());
-        }
+        self.enqueue(path, target_size, high_quality, LoadPriority::Current);
+    }
 
-        let request = LoadRequest {
-            path: p,
+    pub fn preload_image(&self, path: &Path, target_size: Option<(u32, u32)>) {
+        self.enqueue(path, target_size, false, LoadPriority::Preload);
+    }
+
+    fn enqueue(
+        &self,
+        path: &Path,
+        target_size: Option<(u32, u32)>,
+        high_quality: bool,
+        priority: LoadPriority,
+    ) {
+        let req = LoadRequest {
+            path: path.to_path_buf(),
             target_size,
             high_quality,
         };
-        let _ = self.sender.send(request);
+        let inserted = lock(&self.inner.shared.queue).enqueue(req, priority);
+        if inserted {
+            self.inner.shared.work.notify_one();
+        }
+    }
+}
+
+fn worker_loop(shared: &LoaderShared) {
+    loop {
+        let request = {
+            let mut queue = lock(&shared.queue);
+            loop {
+                if shared.stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                if let Some(req) = queue.pop() {
+                    break req;
+                }
+                queue = shared.work.wait(queue).unwrap_or_else(|e| e.into_inner());
+            }
+        };
+
+        let key = QueueState::key(&request);
+        let path = request.path.clone();
+        let target_dim = request.target_size.map(|(w, h)| w.max(h));
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| load_image_sync(request)))
+                .unwrap_or_else(|_| {
+                    Err(AppError::ImageLoadError("panic decoding image".to_string()))
+                });
+
+        match result {
+            Ok(loaded) => {
+                shared.event_bus.publish(ViewerEvent::ImageLoaded {
+                    path,
+                    image: Arc::new(loaded.image),
+                    target_dim,
+                });
+            }
+            Err(err) => {
+                shared.event_bus.publish(ViewerEvent::ImageLoadFailed {
+                    path,
+                    error: err.to_string(),
+                });
+            }
+        }
+
+        lock(&shared.queue).finish(&key);
     }
 }
 
 fn load_image_sync(request: LoadRequest) -> Result<LoadedImage, AppError> {
+    let ext = request
+        .path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+
+    if ext == "arw" {
+        return load_arw(&request.path, request.target_size, request.high_quality);
+    }
+
     let data = std::fs::read(&request.path).map_err(|e| {
         AppError::FileSystemError(format!(
             "Failed to read image file {}: {}",
@@ -104,20 +235,13 @@ fn load_image_sync(request: LoadRequest) -> Result<LoadedImage, AppError> {
         ))
     })?;
 
-    // Determine image format
-    let format = image::guess_format(&data);
-
-    // Handle ARW, CR3 and HIF specifically if format is unknown or we want to force check extensions
-    let path_str = request.path.to_string_lossy().to_lowercase();
-    if path_str.ends_with(".arw") {
-        return load_arw(data, request.target_size);
-    } else if path_str.ends_with(".cr3") {
-        return load_raw_preview(&data, request.target_size);
-    } else if path_str.ends_with(".hif") || path_str.ends_with(".heic") {
-        return load_hif(&data);
+    if ext == "cr3" {
+        return load_raw_preview(&data, request.target_size, request.high_quality);
+    } else if ext == "hif" || ext == "heic" {
+        return load_hif(&data, request.target_size, request.high_quality);
     }
 
-    let format = format.map_err(|e| {
+    let format = image::guess_format(&data).map_err(|e| {
         AppError::ImageLoadError(format!(
             "Failed to guess image format for {}: {}",
             request.path.display(),
@@ -125,9 +249,8 @@ fn load_image_sync(request: LoadRequest) -> Result<LoadedImage, AppError> {
         ))
     })?;
 
-    // For JPEG images, use optimized loading
     let img = if format == ImageFormat::Jpeg {
-        load_jpeg_optimized(&data, request.target_size).map_err(|e| {
+        load_jpeg_optimized(&data, request.target_size, request.high_quality).map_err(|e| {
             AppError::ImageLoadError(format!(
                 "Failed to load JPEG {}: {}",
                 request.path.display(),
@@ -142,87 +265,102 @@ fn load_image_sync(request: LoadRequest) -> Result<LoadedImage, AppError> {
                 e
             ))
         })?;
-
-        // Resize if needed
-        if let Some((width, height)) = request.target_size {
-            img = img.resize(
-                width,
-                height,
-                if request.high_quality {
-                    image::imageops::FilterType::Lanczos3
-                } else {
-                    image::imageops::FilterType::Triangle
-                },
-            );
-        }
+        resize_to_fit(&mut img, request.target_size, request.high_quality);
         img
     };
 
-    let color_image = dynamic_image_to_color_image(&img);
-
-    Ok(LoadedImage { image: color_image })
-}
-
-fn load_jpeg_optimized(
-    data: &[u8],
-    target_size: Option<(u32, u32)>,
-) -> Result<DynamicImage, AppError> {
-    use image::codecs::jpeg::JpegDecoder;
-    use image::ImageDecoder;
-
-    let decoder = JpegDecoder::new(std::io::Cursor::new(data))
-        .map_err(|e| AppError::ImageLoadError(format!("Failed to create JPEG decoder: {}", e)))?;
-
-    // Use JPEG's built-in downsampling for better performance
-    let img = if let Some((target_width, target_height)) = target_size {
-        let (orig_width, orig_height) = decoder.dimensions();
-        let scale = ((orig_width / target_width).min(orig_height / target_height)).max(1);
-
-        if scale > 1 {
-            // Use JPEG's efficient downsampling
-            let decoder = JpegDecoder::new(std::io::Cursor::new(data)).map_err(|e| {
-                AppError::ImageLoadError(format!(
-                    "Failed to create JPEG decoder for downsampling: {}",
-                    e
-                ))
-            })?;
-            // Note: set_max_decoding_pixels not available in this version
-            DynamicImage::from_decoder(decoder)
-                .map_err(|e| AppError::ImageLoadError(format!("Failed to decode JPEG: {}", e)))?
-        } else {
-            image::load_from_memory_with_format(data, image::ImageFormat::Jpeg)
-                .map_err(|e| AppError::ImageLoadError(format!("Failed to load JPEG: {}", e)))?
-        }
-    } else {
-        image::load_from_memory_with_format(data, image::ImageFormat::Jpeg)
-            .map_err(|e| AppError::ImageLoadError(format!("Failed to load JPEG: {}", e)))?
-    };
-
-    Ok(img)
-}
-
-/// ARW: demosaica los datos del sensor a resolución completa, sin curva ni estilo de la cámara.
-/// Si quickraw no soporta el modelo, usa el JPEG embebido más grande.
-fn load_arw(data: Vec<u8>, target_size: Option<(u32, u32)>) -> Result<LoadedImage, AppError> {
-    let Some(mut img) = decode_sensor(data.clone()) else {
-        let largest = crate::thumbnails::generate::bounded_preview_jpeg(&data, data.len());
-        return match largest {
-            Some(jpg) => decode_and_fit(jpg, target_size),
-            None => load_raw_preview(&data, target_size),
-        };
-    };
-    if let Some((w, h)) = target_size {
-        if img.width() > w || img.height() > h {
-            img = img.resize(w, h, image::imageops::FilterType::Triangle);
-        }
-    }
     Ok(LoadedImage {
         image: dynamic_image_to_color_image(&img),
     })
 }
 
-/// Demosaico lineal con quickraw a sRGB. La orientación la aplica la vista con el EXIF.
+fn resize_filter(high_quality: bool) -> image::imageops::FilterType {
+    if high_quality {
+        image::imageops::FilterType::Lanczos3
+    } else {
+        image::imageops::FilterType::Triangle
+    }
+}
+
+fn resize_to_fit(img: &mut DynamicImage, target_size: Option<(u32, u32)>, high_quality: bool) {
+    if let Some((w, h)) = target_size {
+        if img.width() > w || img.height() > h {
+            *img = img.resize(w, h, resize_filter(high_quality));
+        }
+    }
+}
+
+fn load_jpeg_optimized(
+    data: &[u8],
+    target_size: Option<(u32, u32)>,
+    high_quality: bool,
+) -> Result<DynamicImage, AppError> {
+    if let Some((w, h)) = target_size {
+        if let Ok(rgb) = crate::thumbnails::generate::decode_jpeg_scaled(data, w.max(h)) {
+            let mut img = DynamicImage::ImageRgb8(rgb);
+            resize_to_fit(&mut img, Some((w, h)), high_quality);
+            return Ok(img);
+        }
+    }
+
+    let mut img = image::load_from_memory_with_format(data, ImageFormat::Jpeg)
+        .map_err(|e| AppError::ImageLoadError(format!("Failed to load JPEG: {}", e)))?;
+    resize_to_fit(&mut img, target_size, high_quality);
+    Ok(img)
+}
+
+/// ARW: demosaica los datos del sensor a resolución completa, sin curva ni estilo de la cámara.
+/// Si quickraw no soporta el modelo, usa el JPEG embebido más grande.
+fn load_arw(
+    path: &Path,
+    target_size: Option<(u32, u32)>,
+    high_quality: bool,
+) -> Result<LoadedImage, AppError> {
+    if let Some(mut img) = decode_sensor_path(path) {
+        resize_to_fit(&mut img, target_size, high_quality);
+        return Ok(LoadedImage {
+            image: dynamic_image_to_color_image(&img),
+        });
+    }
+
+    let data = std::fs::read(path).map_err(|e| {
+        AppError::FileSystemError(format!("Failed to read ARW file {}: {}", path.display(), e))
+    })?;
+    let largest = crate::thumbnails::generate::bounded_preview_jpeg(&data, data.len());
+    match largest {
+        Some(jpg) => decode_and_fit(jpg, target_size, high_quality),
+        None => load_raw_preview(&data, target_size, high_quality),
+    }
+}
+
+/// Demosaico lineal con quickraw leyendo directo desde ruta, sin clonar el buffer entero.
+fn decode_sensor_path(path: &Path) -> Option<DynamicImage> {
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.len() < 16 {
+        return None;
+    }
+    let path_str = path.to_str()?.to_owned();
+    std::panic::catch_unwind(move || {
+        use quickraw::{data, DemosaicingMethod, Export, Input, Output, OutputType};
+        let output = Output::new(
+            DemosaicingMethod::Linear,
+            data::XYZ2SRGB,
+            data::GAMMA_SRGB,
+            OutputType::Raw8,
+            true,
+            false,
+        );
+        let export = Export::new(Input::ByFile(&path_str), output).ok()?;
+        let (pixels, w, h) = export.export_8bit_image();
+        image::RgbImage::from_raw(w as u32, h as u32, pixels).map(DynamicImage::ImageRgb8)
+    })
+    .ok()
+    .flatten()
+}
+
+/// Demosaico lineal con quickraw a sRGB desde memoria. La orientación la aplica la vista con el EXIF.
 /// `None` si el modelo no está soportado o quickraw entra en pánico.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn decode_sensor(data: Vec<u8>) -> Option<DynamicImage> {
     use quickraw::{data, DemosaicingMethod, Export, Input, Output, OutputType};
     if data.len() < 16 {
@@ -245,41 +383,38 @@ pub(crate) fn decode_sensor(data: Vec<u8>) -> Option<DynamicImage> {
     .flatten()
 }
 
-fn decode_and_fit(jpg: &[u8], target_size: Option<(u32, u32)>) -> Result<LoadedImage, AppError> {
-    let mut img = image::load_from_memory_with_format(jpg, ImageFormat::Jpeg).map_err(|e| {
+fn decode_and_fit(
+    jpg: &[u8],
+    target_size: Option<(u32, u32)>,
+    high_quality: bool,
+) -> Result<LoadedImage, AppError> {
+    let img = load_jpeg_optimized(jpg, target_size, high_quality).map_err(|e| {
         AppError::ImageLoadError(format!("Failed to load extracted RAW preview: {}", e))
     })?;
-    if let Some((w, h)) = target_size {
-        if img.width() > w || img.height() > h {
-            img = img.resize(w, h, image::imageops::FilterType::Triangle);
-        }
-    }
     Ok(LoadedImage {
         image: dynamic_image_to_color_image(&img),
     })
 }
 
-fn load_raw_preview(data: &[u8], target_size: Option<(u32, u32)>) -> Result<LoadedImage, AppError> {
-    // CR3 is not supported by quickraw: read its full-size JPEG from the container
+fn load_raw_preview(
+    data: &[u8],
+    target_size: Option<(u32, u32)>,
+    high_quality: bool,
+) -> Result<LoadedImage, AppError> {
     let jpg_data = match crate::cr3::preview_jpeg(data) {
         Some(jpg) => Cow::Borrowed(jpg),
-        // Otherwise extract the embedded JPEG preview/thumbnail using quickraw
-        // Note: quickraw's export_thumbnail_data usually returns the largest embedded preview
         None => match safe_export_thumbnail(data) {
             Some((data, _orientation)) => Cow::Owned(data),
-            None => {
-                // If quickraw fails, try manual extraction of the largest JPEG
-                Cow::Owned(extract_largest_jpeg(data).ok_or_else(|| {
-                    AppError::ImageLoadError(
-                        "Failed to extract RAW preview (quickraw and manual fallback failed)"
-                            .to_string(),
-                    )
-                })?)
-            }
+            None => Cow::Owned(extract_largest_jpeg(data).ok_or_else(|| {
+                AppError::ImageLoadError(
+                    "Failed to extract RAW preview (quickraw and manual fallback failed)"
+                        .to_string(),
+                )
+            })?),
         },
     };
 
-    decode_and_fit(&jpg_data, target_size)
+    decode_and_fit(&jpg_data, target_size, high_quality)
 }
 
 /// Calls `quickraw::Export::export_thumbnail_data` while guarding against panics.
@@ -288,7 +423,6 @@ fn load_raw_preview(data: &[u8], target_size: Option<(u32, u32)>) -> Result<Load
 /// truncated or unsupported files. A panic on a loader thread would otherwise
 /// bring down the whole app, so treat any panic as "no thumbnail".
 pub(crate) fn safe_export_thumbnail(data: &[u8]) -> Option<(Vec<u8>, u32)> {
-    // Too small to hold a valid TIFF/ISO-BMFF header; skip quickraw entirely.
     if data.len() < 16 {
         return None;
     }
@@ -302,53 +436,14 @@ pub(crate) fn safe_export_thumbnail(data: &[u8]) -> Option<(Vec<u8>, u32)> {
 }
 
 fn extract_largest_jpeg(data: &[u8]) -> Option<Vec<u8>> {
-    let mut best_jpeg = None;
-    let mut max_size = 0;
-
-    let mut i = 0;
-    // Simple heuristic to find JPEG streams (FF D8 ... FF D9)
-    // We limit search to avoid performance issues on huge files if possible,
-    // but for CR3 we might need to scan deep.
-    // Optimization: Valid JPEGs usually start at aligned offsets or specific atom positions,
-    // but byte scanning is fast enough for 50MB files in Rust.
-
-    while i < data.len().saturating_sub(2) {
-        // Search for JPEG SOI (Start of Image): FF D8
-        // Note: Some might use FF D8 FF but FF D8 is the marker.
-        // Standard JPEG is FF D8 FF E0/E1/DB...
-        if data[i] == 0xFF && data[i + 1] == 0xD8 {
-            let start = i;
-            let mut end = 0;
-            // Search for EOI (End of Image): FF D9
-            let mut j = start + 2;
-            while j < data.len().saturating_sub(1) {
-                if data[j] == 0xFF && data[j + 1] == 0xD9 {
-                    end = j + 2;
-                    let size = end - start;
-                    // Filter out very small thumbnails (e.g. < 10KB) if we have candidates,
-                    // or just pick the largest one.
-                    if size > max_size {
-                        max_size = size;
-                        best_jpeg = Some((start, end));
-                    }
-                    // Jump index
-                    i = end - 1;
-                    break;
-                }
-                j += 1;
-            }
-            if end == 0 {
-                i += 1;
-            }
-        } else {
-            i += 1;
-        }
-    }
-
-    best_jpeg.map(|(start, end)| data[start..end].to_vec())
+    crate::thumbnails::generate::bounded_preview_jpeg(data, data.len()).map(|s| s.to_vec())
 }
 
-fn load_hif(data: &[u8]) -> Result<LoadedImage, AppError> {
+fn load_hif(
+    data: &[u8],
+    target_size: Option<(u32, u32)>,
+    high_quality: bool,
+) -> Result<LoadedImage, AppError> {
     let lib_heif = LibHeif::new();
     let ctx = HeifContext::read_from_bytes(data)
         .map_err(|e| AppError::ImageLoadError(format!("Failed to read HEIF data: {}", e)))?;
@@ -357,7 +452,6 @@ fn load_hif(data: &[u8]) -> Result<LoadedImage, AppError> {
         AppError::ImageLoadError(format!("Failed to get primary image handle: {}", e))
     })?;
 
-    // Decode the image
     let image = lib_heif
         .decode(
             &handle,
@@ -374,41 +468,61 @@ fn load_hif(data: &[u8]) -> Result<LoadedImage, AppError> {
     let width = image.width();
     let height = image.height();
     let stride = interleaved_plane.stride;
-    let data = interleaved_plane.data;
+    let raw = interleaved_plane.data;
+    let row_bytes = width as usize * 3;
 
-    // Create DynamicImage from raw data
-    // The data is likely RGB8 or RGBA8 depending on how we decoded.
-    // We requested Rgb, so it should be RGB.
-
-    // We need to be careful about stride.
-    let mut buffer = Vec::with_capacity((width * height * 3) as usize);
-    for y in 0..height {
-        let start = y as usize * stride;
-        let end = start + (width as usize * 3);
-        buffer.extend_from_slice(&data[start..end]);
+    let needs_resize = target_size.is_some_and(|(w, h)| width > w || height > h);
+    if !needs_resize {
+        let mut pixels = Vec::with_capacity((width as usize) * (height as usize));
+        for y in 0..height as usize {
+            let start = y * stride;
+            let row = raw.get(start..start + row_bytes).ok_or_else(|| {
+                AppError::ImageLoadError("Truncated HEIF plane buffer".to_string())
+            })?;
+            for &[r, g, b] in row.as_chunks::<3>().0 {
+                pixels.push(egui::Color32::from_rgb(r, g, b));
+            }
+        }
+        return Ok(LoadedImage {
+            image: ColorImage {
+                size: [width as usize, height as usize],
+                pixels,
+            },
+        });
     }
 
-    let img_buffer = image::ImageBuffer::<image::Rgb<u8>, Vec<u8>>::from_raw(width, height, buffer)
-        .ok_or_else(|| {
-            AppError::ImageLoadError("Failed to create image buffer from HEIF data".to_string())
-        })?;
+    let mut buffer = Vec::with_capacity(row_bytes * height as usize);
+    for y in 0..height as usize {
+        let start = y * stride;
+        let row = raw
+            .get(start..start + row_bytes)
+            .ok_or_else(|| AppError::ImageLoadError("Truncated HEIF plane buffer".to_string()))?;
+        buffer.extend_from_slice(row);
+    }
 
-    let dynamic_image = DynamicImage::ImageRgb8(img_buffer);
-    let color_image = dynamic_image_to_color_image(&dynamic_image);
-
-    Ok(LoadedImage { image: color_image })
+    let rgb = image::RgbImage::from_raw(width, height, buffer).ok_or_else(|| {
+        AppError::ImageLoadError("Failed to create image buffer from HEIF data".to_string())
+    })?;
+    let mut dynamic_image = DynamicImage::ImageRgb8(rgb);
+    resize_to_fit(&mut dynamic_image, target_size, high_quality);
+    Ok(LoadedImage {
+        image: dynamic_image_to_color_image(&dynamic_image),
+    })
 }
 
 fn dynamic_image_to_color_image(img: &DynamicImage) -> ColorImage {
-    let rgb_image = img.to_rgb8();
-    let pixels = rgb_image
-        .pixels()
-        .map(|p| egui::Color32::from_rgb(p[0], p[1], p[2]))
-        .collect();
-
-    ColorImage {
-        size: [img.width() as usize, img.height() as usize],
-        pixels,
+    match img {
+        DynamicImage::ImageRgb8(rgb) => {
+            ColorImage::from_rgb([rgb.width() as usize, rgb.height() as usize], rgb.as_raw())
+        }
+        DynamicImage::ImageRgba8(rgba) => ColorImage::from_rgba_unmultiplied(
+            [rgba.width() as usize, rgba.height() as usize],
+            rgba.as_raw(),
+        ),
+        _ => {
+            let rgb = img.to_rgb8();
+            ColorImage::from_rgb([rgb.width() as usize, rgb.height() as usize], rgb.as_raw())
+        }
     }
 }
 
@@ -433,14 +547,27 @@ pub fn scan_image_files(
         let supported = path.extension().is_some_and(|ext| {
             matches!(
                 ext.to_string_lossy().to_lowercase().as_str(),
-                "jpg" | "jpeg" | "png" | "bmp" | "tiff" | "webp" | "hif" | "heic" | "arw" | "cr3"
+                "jpg"
+                    | "jpeg"
+                    | "png"
+                    | "bmp"
+                    | "tif"
+                    | "tiff"
+                    | "webp"
+                    | "hif"
+                    | "heic"
+                    | "arw"
+                    | "cr3"
             )
         });
         if supported {
-            let mtime = entry
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
             files.push((path, mtime));
             if let Some(found) = found {
                 found.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -462,13 +589,65 @@ pub fn get_image_files(dir: &Path, newest_first: bool) -> Result<Vec<PathBuf>, A
     Ok(files.into_iter().map(|(path, _)| path).collect())
 }
 
+// Preloader for adjacent images sharing the main ImageLoader priority pool.
+pub struct ImagePreloader {
+    loader: ImageLoader,
+    cache: crate::cache::ImageCache,
+    preload_distance: usize,
+    preview_size: u32,
+}
+
+impl ImagePreloader {
+    pub fn new(
+        loader: ImageLoader,
+        cache: crate::cache::ImageCache,
+        preload_distance: usize,
+        preview_size: u32,
+    ) -> Self {
+        Self {
+            loader,
+            cache,
+            preload_distance,
+            preview_size,
+        }
+    }
+
+    pub fn preload_adjacent(&self, current_path: &Path, all_files: &[PathBuf]) {
+        let Some(idx) = all_files.iter().position(|p| p == current_path) else {
+            return;
+        };
+
+        for i in 1..=self.preload_distance {
+            if let Some(next_path) = all_files.get(idx + i) {
+                self.maybe_preload(next_path);
+            }
+            if idx >= i {
+                self.maybe_preload(&all_files[idx - i]);
+            }
+        }
+    }
+
+    fn maybe_preload(&self, path: &Path) {
+        let key = path.to_string_lossy();
+        let already_good = self
+            .cache
+            .get_entry(&key)
+            .is_some_and(|e| e.satisfies(Some(self.preview_size)));
+        if !already_good {
+            self.loader
+                .preload_image(path, Some((self.preview_size, self.preview_size)));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs::{self, File};
+    use std::sync::mpsc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn unique_temp_dir() -> std::path::PathBuf {
+    fn unique_temp_dir() -> PathBuf {
         let mut dir = std::env::temp_dir();
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -483,7 +662,7 @@ mod tests {
     fn test_supported_extensions() {
         let dir = unique_temp_dir();
         let extensions = vec![
-            "jpg", "jpeg", "png", "bmp", "tiff", "webp", "hif", "heic", "arw", "cr3",
+            "jpg", "jpeg", "png", "bmp", "tif", "tiff", "webp", "hif", "heic", "arw", "cr3",
         ];
 
         for ext in &extensions {
@@ -491,7 +670,6 @@ mod tests {
             File::create(file_path).unwrap();
         }
 
-        // Add an unsupported file
         File::create(dir.join("test.txt")).unwrap();
 
         let files = get_image_files(&dir, false).unwrap();
@@ -508,69 +686,132 @@ mod tests {
 
         fs::remove_dir_all(dir).unwrap();
     }
-}
 
-// Preloader for adjacent images
-pub struct ImagePreloader {
-    loader: ImageLoader,
-    cache: crate::cache::ImageCache,
-    preload_distance: usize,
-    preview_size: u32,
-}
+    #[test]
+    fn scan_image_files_ignores_directories_and_accepts_tif() {
+        let dir = unique_temp_dir();
+        fs::create_dir_all(dir.join("folder.jpg")).unwrap();
+        File::create(dir.join("photo.tif")).unwrap();
+        File::create(dir.join("real.JPG")).unwrap();
 
-impl ImagePreloader {
-    pub fn new(
-        cache: crate::cache::ImageCache,
-        preload_distance: usize,
-        event_bus: EventBus,
-        preview_size: u32,
-        pending_requests: Arc<Mutex<HashSet<PathBuf>>>,
-    ) -> Self {
-        Self {
-            loader: ImageLoader::with_pending(2, event_bus, pending_requests),
-            cache,
-            preload_distance,
-            preview_size,
+        let files = get_image_files(&dir, false).unwrap();
+        let mut names: Vec<String> = files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["photo.tif", "real.JPG"]);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn jpeg_respects_target_size() {
+        let dir = unique_temp_dir();
+        let path = dir.join("big.jpg");
+        let img = image::RgbImage::from_fn(1600, 1200, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 64])
+        });
+        let jpeg = crate::thumbnails::generate::encode_jpeg(&img).unwrap();
+        fs::write(&path, jpeg).unwrap();
+
+        let loaded = load_image_sync(LoadRequest {
+            path,
+            target_size: Some((400, 400)),
+            high_quality: true,
+        })
+        .unwrap();
+        assert!(
+            loaded.image.size[0].max(loaded.image.size[1]) <= 400,
+            "got {:?}",
+            loaded.image.size
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn hif_respects_target_size() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("photos")
+            .join("IMG_8382.HIF");
+        let loaded = load_image_sync(LoadRequest {
+            path,
+            target_size: Some((600, 600)),
+            high_quality: false,
+        })
+        .unwrap();
+        assert!(
+            loaded.image.size[0].max(loaded.image.size[1]) <= 600,
+            "got {:?}",
+            loaded.image.size
+        );
+    }
+
+    #[test]
+    fn failed_load_emits_error_event() {
+        let (tx, rx) = mpsc::channel();
+        let bus = EventBus::new(tx, None);
+        let loader = ImageLoader::new(1, bus);
+        let missing = PathBuf::from("/definitely/missing/img_viewer_test.jpg");
+        loader.load_image(&missing, Some((512, 512)), true);
+
+        let event = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("expected failure event");
+        match event {
+            ViewerEvent::ImageLoadFailed { path, error } => {
+                assert_eq!(path, missing);
+                assert!(!error.is_empty());
+            }
+            other => panic!("expected ImageLoadFailed, got {other:?}"),
         }
     }
 
-    pub fn preload_adjacent(&self, current_path: &Path, all_files: &[std::path::PathBuf]) {
-        let current_idx = all_files.iter().position(|p| p == current_path);
+    #[test]
+    fn queue_prioritizes_current_lifo_and_allows_hq_upgrade() {
+        let mut q = QueueState::default();
+        let a = PathBuf::from("/a.jpg");
+        let b = PathBuf::from("/b.jpg");
 
-        if let Some(idx) = current_idx {
-            // Preload next images
-            for i in 1..=self.preload_distance {
-                if idx + i < all_files.len() {
-                    let next_path = &all_files[idx + i];
-                    if !self.is_cached(next_path) {
-                        self.loader.load_image(
-                            next_path,
-                            Some((self.preview_size, self.preview_size)),
-                            false,
-                        );
-                    }
-                }
-            }
+        // Preload queued first, then current requests for a and b: b supersedes a and beats preload.
+        assert!(q.enqueue(
+            LoadRequest {
+                path: a.clone(),
+                target_size: Some((1024, 1024)),
+                high_quality: false,
+            },
+            LoadPriority::Preload,
+        ));
+        assert!(q.enqueue(
+            LoadRequest {
+                path: a.clone(),
+                target_size: Some((2048, 2048)),
+                high_quality: true,
+            },
+            LoadPriority::Current,
+        ));
+        // Requesting HQ (None) for the same path while 2048 is queued is NOT deduplicated away.
+        assert!(q.enqueue(
+            LoadRequest {
+                path: a.clone(),
+                target_size: None,
+                high_quality: true,
+            },
+            LoadPriority::Current,
+        ));
+        assert_eq!(q.pop().unwrap().target_size, None);
 
-            // Preload previous images
-            for i in 1..=self.preload_distance {
-                if idx >= i {
-                    let prev_path = &all_files[idx - i];
-                    if !self.is_cached(prev_path) {
-                        self.loader.load_image(
-                            prev_path,
-                            Some((self.preview_size, self.preview_size)),
-                            false,
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    fn is_cached(&self, path: &Path) -> bool {
-        let key = path.to_string_lossy().to_string();
-        self.cache.contains(&key)
+        // Moving to image b drops stale current requests for a.
+        assert!(q.enqueue(
+            LoadRequest {
+                path: b.clone(),
+                target_size: Some((2048, 2048)),
+                high_quality: true,
+            },
+            LoadPriority::Current,
+        ));
+        assert_eq!(q.pop().unwrap().path, b);
+        assert_eq!(q.pop().unwrap().path, a); // preload still served when idle
     }
 }
 

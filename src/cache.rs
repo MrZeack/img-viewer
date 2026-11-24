@@ -163,15 +163,40 @@ impl<V> TimestampedLruCache<V> {
         lock(&self.inner).total_bytes
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn contains(&self, key: &str) -> bool {
         lock(&self.inner).lru.contains(key)
     }
 }
 
-/// Image cache that tracks decoded pixel memory against a byte budget.
+/// Cached decoded image together with the target resolution it was loaded for.
+#[derive(Debug, Clone)]
+pub struct CachedImage {
+    pub image: Arc<ColorImage>,
+    /// Maximum dimension requested (`None` = native full resolution).
+    pub target_dim: Option<u32>,
+}
+
+impl CachedImage {
+    pub fn max_side(&self) -> u32 {
+        self.image.size[0].max(self.image.size[1]) as u32
+    }
+
+    /// True if this image is already at least as sharp as `requested_dim`.
+    /// An image strictly smaller than its own `target_dim` was never downscaled and is already native.
+    pub fn satisfies(&self, requested_dim: Option<u32>) -> bool {
+        match (self.target_dim, requested_dim) {
+            (None, _) => true,
+            (Some(have), Some(want)) => have >= want || self.max_side() < have,
+            (Some(have), None) => self.max_side() < have,
+        }
+    }
+}
+
+/// Image cache that tracks decoded pixel memory against a byte budget and avoids resolution downgrades.
 #[derive(Clone)]
 pub struct ImageCache {
-    inner: TimestampedLruCache<Arc<ColorImage>>,
+    inner: TimestampedLruCache<CachedImage>,
 }
 
 impl ImageCache {
@@ -186,12 +211,34 @@ impl ImageCache {
     }
 
     pub fn get(&self, key: &str) -> Option<Arc<ColorImage>> {
+        self.inner.get(key).map(|entry| entry.image)
+    }
+
+    pub fn get_entry(&self, key: &str) -> Option<CachedImage> {
         self.inner.get(key)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn put(&self, key: String, value: Arc<ColorImage>) {
-        let bytes = value.pixels.len() * std::mem::size_of::<egui::Color32>();
-        self.inner.put_weighted(key, value, bytes);
+        self.put_if_better(key, value, None);
+    }
+
+    /// Inserts the image unless the cache already holds a strictly sharper version for `key`.
+    pub fn put_if_better(
+        &self,
+        key: String,
+        image: Arc<ColorImage>,
+        target_dim: Option<u32>,
+    ) -> bool {
+        let incoming = CachedImage { image, target_dim };
+        if let Some(existing) = self.inner.get(&key) {
+            if existing.satisfies(target_dim) && !incoming.satisfies(existing.target_dim) {
+                return false;
+            }
+        }
+        let bytes = incoming.image.pixels.len() * std::mem::size_of::<egui::Color32>();
+        self.inner.put_weighted(key, incoming, bytes);
+        true
     }
 
     pub fn remove(&self, key: &str) {
@@ -206,6 +253,7 @@ impl ImageCache {
         self.inner.retain_keys(keep);
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn contains(&self, key: &str) -> bool {
         self.inner.contains(key)
     }
@@ -317,5 +365,32 @@ mod tests {
         assert_eq!(cache.len(), 1);
         assert!(cache.contains("b"));
         assert_eq!(cache.total_bytes(), 400);
+    }
+
+    #[test]
+    fn cached_image_satisfies_checks_resolution_and_avoids_downgrade() {
+        let preview = CachedImage {
+            image: dummy_image(1024, 680),
+            target_dim: Some(1024),
+        };
+        assert!(preview.satisfies(Some(1024)));
+        assert!(!preview.satisfies(Some(2048)));
+        assert!(!preview.satisfies(None));
+
+        // Image smaller than requested target was not downscaled, so it satisfies full-res.
+        let small = CachedImage {
+            image: dummy_image(600, 400),
+            target_dim: Some(1024),
+        };
+        assert!(small.satisfies(Some(2048)));
+        assert!(small.satisfies(None));
+
+        let cache = ImageCache::with_max_bytes(10, 100 * 1024 * 1024);
+        cache.put_if_better("p".into(), dummy_image(2048, 1365), Some(2048));
+        // A late 1024px preview must not overwrite the 2048px entry.
+        cache.put_if_better("p".into(), dummy_image(1024, 680), Some(1024));
+        let entry = cache.get_entry("p").unwrap();
+        assert_eq!(entry.target_dim, Some(2048));
+        assert_eq!(entry.image.size, [2048, 1365]);
     }
 }

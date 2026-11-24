@@ -6,7 +6,16 @@ use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub enum ViewerEvent {
-    ImageLoaded(PathBuf, Arc<ColorImage>),
+    ImageLoaded {
+        path: PathBuf,
+        image: Arc<ColorImage>,
+        /// Maximum target dimension requested (`None` = native full resolution).
+        target_dim: Option<u32>,
+    },
+    ImageLoadFailed {
+        path: PathBuf,
+        error: String,
+    },
     MetadataReady(PathBuf, Box<ImageMetadata>),
 }
 
