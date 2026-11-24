@@ -1,212 +1,233 @@
-//! Caching implementation for images, metadata, and composition lines
+//! Generic LRU cache with per-entry timestamps and optional memory budget.
 use egui::ColorImage;
 use lru::LruCache;
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-/// Cache for image data with timestamp tracking for cleanup
-#[derive(Clone)]
-pub struct TimestampedImageCache {
-    /// The main LRU cache holding image data
-    pub cache: Arc<Mutex<LruCache<String, Arc<ColorImage>>>>,
-    /// Map of keys to timestamps for cleanup operations
-    timestamps: Arc<Mutex<HashMap<String, Instant>>>,
+/// Default memory budget for cached full/preview images (512 MiB).
+pub const DEFAULT_IMAGE_CACHE_MAX_BYTES: usize = 512 * 1024 * 1024;
+
+struct CacheEntry<V> {
+    value: V,
+    last_access: Instant,
+    bytes: usize,
 }
 
-/// Cache for image metadata with timestamp tracking for cleanup
-#[derive(Clone)]
-pub struct TimestampedMetadataCache {
-    /// The main LRU cache holding metadata
-    pub cache: Arc<Mutex<LruCache<String, crate::metadata_simple::ImageMetadata>>>,
-    /// Map of keys to timestamps for cleanup operations
-    timestamps: Arc<Mutex<HashMap<String, Instant>>>,
+struct CacheInner<V> {
+    lru: LruCache<String, CacheEntry<V>>,
+    total_bytes: usize,
+    max_bytes: Option<usize>,
 }
 
-/// Type alias for the image cache
-pub type ImageCache = TimestampedImageCache;
-/// Type alias for the metadata cache
-pub type MetadataCache = TimestampedMetadataCache;
+/// Thread-safe LRU cache with per-entry timestamps and optional byte budget.
+pub struct TimestampedLruCache<V> {
+    inner: Arc<Mutex<CacheInner<V>>>,
+}
 
-impl TimestampedImageCache {
-    pub fn new(capacity: usize) -> Self {
+impl<V> Clone for TimestampedLruCache<V> {
+    fn clone(&self) -> Self {
         Self {
-            cache: Arc::new(Mutex::new(LruCache::new(
-                NonZeroUsize::new(capacity).expect("Cache capacity must be non-zero"),
-            ))),
-            timestamps: Arc::new(Mutex::new(HashMap::new())),
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl<V> TimestampedLruCache<V> {
+    pub fn new(capacity: usize) -> Self {
+        Self::create(capacity, None)
+    }
+
+    pub fn with_max_bytes(capacity: usize, max_bytes: usize) -> Self {
+        Self::create(capacity, Some(max_bytes.max(1)))
+    }
+
+    fn create(capacity: usize, max_bytes: Option<usize>) -> Self {
+        let cap = NonZeroUsize::new(capacity.max(1)).expect("capacity clamped to >= 1");
+        Self {
+            inner: Arc::new(Mutex::new(CacheInner {
+                lru: LruCache::new(cap),
+                total_bytes: 0,
+                max_bytes,
+            })),
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<V>
+    where
+        V: Clone,
+    {
+        let mut inner = lock(&self.inner);
+        let entry = inner.lru.get_mut(key)?;
+        entry.last_access = Instant::now();
+        Some(entry.value.clone())
+    }
+
+    pub fn put(&self, key: String, value: V) {
+        self.put_weighted(key, value, 0);
+    }
+
+    pub fn put_weighted(&self, key: String, value: V, bytes: usize) {
+        let mut inner = lock(&self.inner);
+        if let Some(prev) = inner.lru.pop(&key) {
+            inner.total_bytes = inner.total_bytes.saturating_sub(prev.bytes);
+        }
+
+        let cap = inner.lru.cap().get();
+        while inner.lru.len() >= cap {
+            if let Some((_, evicted)) = inner.lru.pop_lru() {
+                inner.total_bytes = inner.total_bytes.saturating_sub(evicted.bytes);
+            } else {
+                break;
+            }
+        }
+
+        if let Some(max_bytes) = inner.max_bytes {
+            while !inner.lru.is_empty() && inner.total_bytes.saturating_add(bytes) > max_bytes {
+                if let Some((_, evicted)) = inner.lru.pop_lru() {
+                    inner.total_bytes = inner.total_bytes.saturating_sub(evicted.bytes);
+                } else {
+                    break;
+                }
+            }
+        }
+
+        inner.total_bytes = inner.total_bytes.saturating_add(bytes);
+        inner.lru.put(
+            key,
+            CacheEntry {
+                value,
+                last_access: Instant::now(),
+                bytes,
+            },
+        );
+    }
+
+    pub fn remove(&self, key: &str) -> Option<V> {
+        let mut inner = lock(&self.inner);
+        inner.lru.pop(key).map(|entry| {
+            inner.total_bytes = inner.total_bytes.saturating_sub(entry.bytes);
+            entry.value
+        })
+    }
+
+    pub fn clear(&self) {
+        let mut inner = lock(&self.inner);
+        inner.lru.clear();
+        inner.total_bytes = 0;
+    }
+
+    pub fn cleanup_old_entries(&self, max_age: Duration) {
+        let now = Instant::now();
+        let mut inner = lock(&self.inner);
+        let expired: Vec<String> = inner
+            .lru
+            .iter()
+            .filter(|(_, entry)| now.duration_since(entry.last_access) > max_age)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in expired {
+            if let Some(entry) = inner.lru.pop(&key) {
+                inner.total_bytes = inner.total_bytes.saturating_sub(entry.bytes);
+            }
+        }
+    }
+
+    pub fn retain_keys(&self, keep: &HashSet<String>) {
+        let mut inner = lock(&self.inner);
+        let drop_keys: Vec<String> = inner
+            .lru
+            .iter()
+            .filter(|(k, _)| !keep.contains(*k))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in drop_keys {
+            if let Some(entry) = inner.lru.pop(&key) {
+                inner.total_bytes = inner.total_bytes.saturating_sub(entry.bytes);
+            }
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn len(&self) -> usize {
+        lock(&self.inner).lru.len()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn total_bytes(&self) -> usize {
+        lock(&self.inner).total_bytes
+    }
+
+    pub fn contains(&self, key: &str) -> bool {
+        lock(&self.inner).lru.contains(key)
+    }
+}
+
+/// Image cache that tracks decoded pixel memory against a byte budget.
+#[derive(Clone)]
+pub struct ImageCache {
+    inner: TimestampedLruCache<Arc<ColorImage>>,
+}
+
+impl ImageCache {
+    pub fn new(capacity: usize) -> Self {
+        Self::with_max_bytes(capacity, DEFAULT_IMAGE_CACHE_MAX_BYTES)
+    }
+
+    pub fn with_max_bytes(capacity: usize, max_bytes: usize) -> Self {
+        Self {
+            inner: TimestampedLruCache::with_max_bytes(capacity, max_bytes),
         }
     }
 
     pub fn get(&self, key: &str) -> Option<Arc<ColorImage>> {
-        let value = self.cache.lock().unwrap().get(key).cloned();
-        if value.is_some() {
-            // refresh last-access timestamp on successful hit
-            self.timestamps
-                .lock()
-                .unwrap()
-                .insert(key.to_string(), Instant::now());
-        }
-        value
+        self.inner.get(key)
     }
 
     pub fn put(&self, key: String, value: Arc<ColorImage>) {
-        {
-            let mut cache = self.cache.lock().unwrap();
-            cache.put(key.clone(), value);
-        }
-        {
-            let mut ts = self.timestamps.lock().unwrap();
-            ts.insert(key, Instant::now());
-        }
-        self.reconcile_timestamps_with_cache();
+        let bytes = value.pixels.len() * std::mem::size_of::<egui::Color32>();
+        self.inner.put_weighted(key, value, bytes);
     }
 
     pub fn remove(&self, key: &str) {
-        self.cache.lock().unwrap().pop(key);
-        self.timestamps.lock().unwrap().remove(key);
-    }
-
-    #[allow(dead_code)]
-    pub fn clear(&self) {
-        self.cache.lock().unwrap().clear();
-        self.timestamps.lock().unwrap().clear();
+        self.inner.remove(key);
     }
 
     pub fn cleanup_old_entries(&self, max_age: Duration) {
-        let now = Instant::now();
-        let mut keys_to_remove = Vec::new();
-
-        {
-            let timestamps = self.timestamps.lock().unwrap();
-            for (key, timestamp) in timestamps.iter() {
-                if now.duration_since(*timestamp) > max_age {
-                    keys_to_remove.push(key.clone());
-                }
-            }
-        }
-
-        for key in keys_to_remove {
-            self.remove(&key);
-        }
+        self.inner.cleanup_old_entries(max_age);
     }
 
-    pub fn len(&self) -> usize {
-        self.cache.lock().unwrap().len()
+    pub fn retain_keys(&self, keep: &HashSet<String>) {
+        self.inner.retain_keys(keep);
     }
 
     pub fn contains(&self, key: &str) -> bool {
-        self.cache.lock().unwrap().contains(key)
-    }
-}
-
-impl TimestampedImageCache {
-    fn reconcile_timestamps_with_cache(&self) {
-        let keys: HashSet<String> = {
-            let cache = self.cache.lock().unwrap();
-            cache.iter().map(|(k, _)| k.clone()).collect()
-        };
-        let mut ts = self.timestamps.lock().unwrap();
-        ts.retain(|k, _| keys.contains(k));
-    }
-}
-
-impl TimestampedMetadataCache {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            cache: Arc::new(Mutex::new(LruCache::new(
-                NonZeroUsize::new(capacity).expect("Cache capacity must be non-zero"),
-            ))),
-            timestamps: Arc::new(Mutex::new(HashMap::new())),
-        }
+        self.inner.contains(key)
     }
 
-    #[allow(dead_code)]
-    pub fn get(&self, key: &str) -> Option<crate::metadata_simple::ImageMetadata> {
-        let value = self.cache.lock().unwrap().get(key).cloned();
-        if value.is_some() {
-            self.timestamps
-                .lock()
-                .unwrap()
-                .insert(key.to_string(), Instant::now());
-        }
-        value
-    }
-
-    pub fn put(&self, key: String, value: crate::metadata_simple::ImageMetadata) {
-        {
-            let mut cache = self.cache.lock().unwrap();
-            cache.put(key.clone(), value);
-        }
-        {
-            let mut ts = self.timestamps.lock().unwrap();
-            ts.insert(key, Instant::now());
-        }
-        self.reconcile_timestamps_with_cache();
-    }
-
-    pub fn remove(&self, key: &str) {
-        self.cache.lock().unwrap().pop(key);
-        self.timestamps.lock().unwrap().remove(key);
-    }
-
-    #[allow(dead_code)]
-    pub fn clear(&self) {
-        self.cache.lock().unwrap().clear();
-        self.timestamps.lock().unwrap().clear();
-    }
-
-    pub fn cleanup_old_entries(&self, max_age: Duration) {
-        let now = Instant::now();
-        let mut keys_to_remove = Vec::new();
-
-        {
-            let timestamps = self.timestamps.lock().unwrap();
-            for (key, timestamp) in timestamps.iter() {
-                if now.duration_since(*timestamp) > max_age {
-                    keys_to_remove.push(key.clone());
-                }
-            }
-        }
-
-        for key in keys_to_remove {
-            self.remove(&key);
-        }
-    }
-
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn len(&self) -> usize {
-        self.cache.lock().unwrap().len()
+        self.inner.len()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn total_bytes(&self) -> usize {
+        self.inner.total_bytes()
     }
 }
 
-impl TimestampedMetadataCache {
-    fn reconcile_timestamps_with_cache(&self) {
-        let keys: HashSet<String> = {
-            let cache = self.cache.lock().unwrap();
-            cache.iter().map(|(k, _)| k.clone()).collect()
-        };
-        let mut ts = self.timestamps.lock().unwrap();
-        ts.retain(|k, _| keys.contains(k));
-    }
-}
+/// Cache for image metadata.
+pub type MetadataCache = TimestampedLruCache<crate::metadata_simple::ImageMetadata>;
 
-pub fn create_image_cache(capacity: usize) -> ImageCache {
-    TimestampedImageCache::new(capacity)
-}
+/// Cache for precomputed composition lines.
+pub type CompositionCache = TimestampedLruCache<Vec<CompositionLine>>;
 
-pub fn create_metadata_cache(capacity: usize) -> MetadataCache {
-    TimestampedMetadataCache::new(capacity)
-}
-
-#[derive(Clone)]
-pub struct CompositionCache {
-    pub cache: Arc<Mutex<LruCache<String, Vec<CompositionLine>>>>,
-    timestamps: Arc<Mutex<HashMap<String, Instant>>>,
-}
-
-/// Represents a single line in a composition guide
+/// Represents a single line in a composition guide.
 #[derive(Debug, Clone)]
 pub struct CompositionLine {
     /// Starting position of the line
@@ -217,79 +238,84 @@ pub struct CompositionLine {
     pub stroke: egui::Stroke,
 }
 
-impl CompositionCache {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            cache: Arc::new(Mutex::new(LruCache::new(
-                NonZeroUsize::new(capacity).expect("Cache capacity must be non-zero"),
-            ))),
-            timestamps: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    pub fn get(&self, key: &str) -> Option<Vec<CompositionLine>> {
-        let value = self.cache.lock().unwrap().get(key).cloned();
-        if value.is_some() {
-            self.timestamps
-                .lock()
-                .unwrap()
-                .insert(key.to_string(), Instant::now());
-        }
-        value
-    }
-
-    pub fn put(&self, key: String, lines: Vec<CompositionLine>) {
-        {
-            let mut cache = self.cache.lock().unwrap();
-            cache.put(key.clone(), lines);
-        }
-        {
-            let mut ts = self.timestamps.lock().unwrap();
-            ts.insert(key, Instant::now());
-        }
-        self.reconcile_timestamps_with_cache();
-    }
-
-    pub fn remove(&self, key: &str) {
-        self.cache.lock().unwrap().pop(key);
-        self.timestamps.lock().unwrap().remove(key);
-    }
-
-    pub fn clear(&self) {
-        self.cache.lock().unwrap().clear();
-        self.timestamps.lock().unwrap().clear();
-    }
-
-    pub fn cleanup_old_entries(&self, max_age: Duration) {
-        let now = Instant::now();
-        let mut keys_to_remove = Vec::new();
-
-        {
-            let timestamps = self.timestamps.lock().unwrap();
-            for (key, timestamp) in timestamps.iter() {
-                if now.duration_since(*timestamp) > max_age {
-                    keys_to_remove.push(key.clone());
-                }
-            }
-        }
-
-        for key in keys_to_remove {
-            self.remove(&key);
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.cache.lock().unwrap().len()
-    }
+pub fn create_image_cache(capacity: usize) -> ImageCache {
+    ImageCache::new(capacity)
 }
 
-impl CompositionCache {
-    fn reconcile_timestamps_with_cache(&self) {
-        let keys: HashSet<String> = {
-            let cache = self.cache.lock().unwrap();
-            cache.iter().map(|(k, _)| k.clone()).collect()
-        };
-        let mut ts = self.timestamps.lock().unwrap();
-        ts.retain(|k, _| keys.contains(k));
+pub fn create_metadata_cache(capacity: usize) -> MetadataCache {
+    MetadataCache::new(capacity)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_image(w: usize, h: usize) -> Arc<ColorImage> {
+        Arc::new(ColorImage::new([w, h], egui::Color32::BLACK))
+    }
+
+    #[test]
+    fn zero_capacity_clamps_to_one_without_panicking() {
+        let cache: TimestampedLruCache<u32> = TimestampedLruCache::new(0);
+        cache.put("a".into(), 1);
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get("a"), Some(1));
+        cache.put("b".into(), 2);
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get("a"), None);
+        assert_eq!(cache.get("b"), Some(2));
+    }
+
+    #[test]
+    fn ttl_cleanup_removes_only_expired_entries() {
+        let cache: TimestampedLruCache<u32> = TimestampedLruCache::new(4);
+        cache.put("old".into(), 1);
+        std::thread::sleep(Duration::from_millis(25));
+        cache.put("fresh".into(), 2);
+
+        cache.cleanup_old_entries(Duration::from_millis(15));
+        assert_eq!(cache.get("old"), None);
+        assert_eq!(cache.get("fresh"), Some(2));
+    }
+
+    #[test]
+    fn image_cache_enforces_byte_budget_and_tracks_updates() {
+        // Each 10x10 image = 400 bytes; budget 900 bytes fits 2 images.
+        let cache = ImageCache::with_max_bytes(10, 900);
+        cache.put("a".into(), dummy_image(10, 10));
+        cache.put("b".into(), dummy_image(10, 10));
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.total_bytes(), 800);
+
+        // Accessing "a" makes "b" LRU; inserting "c" should evict "b".
+        assert!(cache.get("a").is_some());
+        cache.put("c".into(), dummy_image(10, 10));
+        assert_eq!(cache.len(), 2);
+        assert!(cache.contains("a"));
+        assert!(!cache.contains("b"));
+        assert!(cache.contains("c"));
+        assert_eq!(cache.total_bytes(), 800);
+
+        // Replacing "c" with a larger single image (20x20 = 1600 bytes) evicts "a"
+        // and still keeps "c" alone.
+        cache.put("c".into(), dummy_image(20, 20));
+        assert_eq!(cache.len(), 1);
+        assert!(!cache.contains("a"));
+        assert!(cache.contains("c"));
+        assert_eq!(cache.total_bytes(), 1600);
+    }
+
+    #[test]
+    fn retain_keys_evicts_unlisted_entries_and_updates_bytes() {
+        let cache = ImageCache::with_max_bytes(10, 10_000);
+        cache.put("a".into(), dummy_image(10, 10));
+        cache.put("b".into(), dummy_image(10, 10));
+        cache.put("c".into(), dummy_image(10, 10));
+        let keep: HashSet<String> = ["b".into()].into_iter().collect();
+
+        cache.retain_keys(&keep);
+        assert_eq!(cache.len(), 1);
+        assert!(cache.contains("b"));
+        assert_eq!(cache.total_bytes(), 400);
     }
 }

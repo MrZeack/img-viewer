@@ -27,7 +27,6 @@ impl eframe::App for ImageViewerApp {
         let now = Instant::now();
         if now.duration_since(self.last_cache_cleanup).as_secs() >= 30 {
             self.cleanup_old_cache_entries();
-            self.cleanup_cache_by_usage();
             self.last_cache_cleanup = now;
         }
 
