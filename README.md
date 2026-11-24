@@ -139,3 +139,6 @@ source ~/.bashrc
 2. Create a feature branch.
 3. Ensure `make check` passes.
 4. Submit a pull request.
+
+## 📄 License
+MIT, see [LICENSE](LICENSE). The bundled NIMA model is Apache-2.0 (see [models/NOTICE](models/NOTICE)).
