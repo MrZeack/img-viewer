@@ -130,7 +130,7 @@ if "%NATIVE_OPT%"=="true" (
 )
 
 :: Construct cargo build command
-set CARGO_CMD=cargo build
+set CARGO_CMD=cargo build --locked
 
 if "%BUILD_TYPE%"=="release" (
     set CARGO_CMD=!CARGO_CMD! --release
@@ -174,7 +174,7 @@ if "%INSTALL%"=="true" (
         mkdir "%INSTALL_DIR%"
     )
     
-    set INSTALL_PATH=%INSTALL_DIR%\img_viewer.exe
+    set INSTALL_PATH=%INSTALL_DIR%\img.exe
     
     :: Copy binary
     copy "%BINARY_PATH%" "!INSTALL_PATH!" >nul
@@ -192,23 +192,11 @@ if "%INSTALL%"=="true" (
         echo %YELLOW%[WARN]%NC% Add this to your PATH environment variable to run from anywhere
         echo %YELLOW%[WARN]%NC% Or run: setx PATH "%%PATH%%;%INSTALL_DIR%"
     ) else (
-        echo %GREEN%[INFO]%NC% Installation successful! You can now run: img_viewer
+        echo %GREEN%[INFO]%NC% Installation successful! You can now run: img
     )
-)
-
-:: Performance tips
-if "%BUILD_TYPE%"=="release" (
-    echo.
-    echo %GREEN%[INFO]%NC% Performance Tips:
-    echo   • For maximum performance, use --native flag next time
-    echo   • Use 'cargo run --release' for direct execution
-    echo   • Large images benefit from NVMe SSD storage
-    echo   • Close other applications for best performance
-    echo   • Consider Windows Game Mode for maximum CPU priority
 )
 
 echo.
 echo %GREEN%[INFO]%NC% Build script completed successfully!
 echo %GREEN%[INFO]%NC% You can now run the image viewer: %BINARY_PATH%
-
-pause
+exit /b 0
