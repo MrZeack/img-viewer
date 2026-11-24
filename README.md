@@ -12,7 +12,7 @@ A high-performance image viewer written in Rust with GPU acceleration, advanced 
 
 ## ⚡ Installation
 
-Requirements: Rust (https://rustup.rs), `pkg-config` and `libheif` (macOS: `brew install pkg-config libheif`; Debian/Ubuntu: `apt install pkg-config libheif-dev libfontconfig1-dev`).
+Requirements: Rust (https://rustup.rs), `pkg-config` and `libheif` (macOS: `brew install pkg-config libheif`; Debian/Ubuntu: `apt install pkg-config libheif-dev libheif-plugin-libde265 libfontconfig1-dev`; the libde265 plugin decodes Canon 10-bit 4:2:2 HIF, which the ffmpeg plugin of Ubuntu 24.04 cannot).
 
 ### Linux/macOS
 ```bash

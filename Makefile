@@ -14,9 +14,9 @@ help: ## Lista los targets
 
 install: ## Valida herramientas, compila en release e instala `img` en INSTALL_DIR
 	@for t in cargo rustc pkg-config; do \
-		command -v $$t >/dev/null || { echo "Falta '$$t'. Rust: https://rustup.rs · macOS: brew install pkg-config libheif · Debian/Ubuntu: apt install pkg-config libheif-dev libfontconfig1-dev"; exit 1; }; \
+		command -v $$t >/dev/null || { echo "Falta '$$t'. Rust: https://rustup.rs · macOS: brew install pkg-config libheif · Debian/Ubuntu: apt install pkg-config libheif-dev libheif-plugin-libde265 libfontconfig1-dev"; exit 1; }; \
 	done
-	@pkg-config --exists libheif || { echo "Falta libheif. macOS: brew install libheif · Debian/Ubuntu: apt install libheif-dev"; exit 1; }
+	@pkg-config --exists libheif || { echo "Falta libheif. macOS: brew install libheif · Debian/Ubuntu: apt install libheif-dev libheif-plugin-libde265"; exit 1; }
 	cargo fetch --locked
 	$(if $(filter 1,$(NATIVE)),RUSTFLAGS="-C target-cpu=native") cargo build --release --locked
 	install -d "$(INSTALL_DIR)"
