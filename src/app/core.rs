@@ -60,7 +60,7 @@ impl ImageViewerApp {
             mtimes: std::collections::HashMap::new(),
             folder_load: None,
             grid: Default::default(),
-            last_moved: None,
+            undo_stack: Vec::new(),
             last_cache_cleanup: Instant::now(),
             last_distant_cleanup: Instant::now(),
             event_receiver,

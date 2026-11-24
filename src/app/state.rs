@@ -77,8 +77,8 @@ pub struct ImageViewerApp {
     pub(crate) folder_load: Option<super::folder_load::FolderLoad>,
     pub(crate) grid: super::grid::GridState,
 
-    /// Last move, for undo (U)
-    pub(crate) last_moved: Option<LastMove>,
+    /// History of moves for multi-level undo (U)
+    pub(crate) undo_stack: Vec<LastMove>,
 
     /// Time of last general cache cleanup
     pub(crate) last_cache_cleanup: Instant,
@@ -121,7 +121,7 @@ impl ImageViewerApp {
     }
 }
 
-/// Last move performed, so it can be undone
+/// Move performed, so it can be undone
 #[derive(Clone, Debug)]
 pub(crate) enum LastMove {
     /// Single image moved to best/worse/deleted
@@ -130,6 +130,7 @@ pub(crate) enum LastMove {
         dest: PathBuf,
         label: String,
         index: usize,
+        tag: Option<u8>,
     },
     /// Tagged images moved to their tag folders
     Batch(Vec<super::tags::PlannedMove>),
@@ -219,7 +220,7 @@ pub(crate) fn test_app(files: Vec<PathBuf>, current_index: usize) -> ImageViewer
         mtimes: HashMap::new(),
         folder_load: None,
         grid: Default::default(),
-        last_moved: None,
+        undo_stack: Vec::new(),
         last_cache_cleanup: Instant::now(),
         last_distant_cleanup: Instant::now(),
         event_receiver: rx,

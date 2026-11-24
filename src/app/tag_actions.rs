@@ -128,6 +128,8 @@ impl ImageViewerApp {
         if self.image_files.is_empty() {
             self.current_image = None;
             self.current_metadata = None;
+        } else if self.show_grid {
+            self.grid.scroll_to_selected = true;
         } else {
             self.load_current_image(ctx);
         }
@@ -159,10 +161,10 @@ impl ImageViewerApp {
             _ => self.current_index - removed_before,
         };
         if self.current_index >= self.image_files.len() {
-            self.current_index = 0;
+            self.current_index = self.image_files.len().saturating_sub(1);
         }
         self.current_image = None;
-        self.last_moved = Some(LastMove::Batch(report.moved));
+        self.undo_stack.push(LastMove::Batch(report.moved));
     }
 
     /// U tras un movimiento por tags: devuelve los archivos y restaura sus tags.
@@ -192,7 +194,11 @@ impl ImageViewerApp {
             msg.push_str(&format!(" · {failed} no se pudieron restaurar"));
         }
         self.set_status_message(&msg, 4.0);
-        self.load_current_image(ctx);
+        if self.show_grid {
+            self.grid.scroll_to_selected = true;
+        } else {
+            self.load_current_image(ctx);
+        }
     }
 
     pub(crate) fn apply_batch_undo(&mut self, restored: Vec<PlannedMove>, rescanned: Vec<PathBuf>) {
@@ -210,7 +216,6 @@ impl ImageViewerApp {
         }
         self.current_image = None;
         self.current_metadata = None;
-        self.last_moved = None;
     }
 
     fn persist_tag_names(&mut self) {
@@ -352,7 +357,7 @@ mod tests {
         assert_eq!(app.image_files, vec![p("/tmp/b.jpg"), p("/tmp/d.jpg")]);
         assert_eq!(app.current_index, 1);
         assert_eq!(app.tags.tag_of(&p("/tmp/a.jpg")), None);
-        assert!(matches!(&app.last_moved, Some(LastMove::Batch(m)) if m.len() == 2));
+        assert!(matches!(app.undo_stack.last(), Some(LastMove::Batch(m)) if m.len() == 2));
     }
 
     #[test]
@@ -370,7 +375,6 @@ mod tests {
     fn batch_undo_restores_listing_tags_and_selects_first_restored() {
         let mut app = test_app(vec![p("/tmp/b.jpg")], 0);
         app.tags.set_name(1, "a").unwrap();
-        app.last_moved = Some(LastMove::Batch(vec![mv("/tmp/c.jpg", 1)]));
         app.apply_batch_undo(
             vec![mv("/tmp/c.jpg", 1)],
             ["/tmp/a.jpg", "/tmp/b.jpg", "/tmp/c.jpg"].map(p).to_vec(),
@@ -378,6 +382,5 @@ mod tests {
         assert_eq!(app.image_files.len(), 3);
         assert_eq!(app.current_index, 2);
         assert_eq!(app.tags.tag_of(&p("/tmp/c.jpg")), Some(1));
-        assert!(app.last_moved.is_none());
     }
 }

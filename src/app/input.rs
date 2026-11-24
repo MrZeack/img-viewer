@@ -107,11 +107,11 @@ impl ImageViewerApp {
     /// L/W/D/U; devuelve `true` si consumió la tecla.
     fn handle_move_keys(&mut self, ctx: &Context) -> bool {
         if ctx.input(|i| i.key_pressed(Key::L)) {
-            self.like_image(ctx);
+            self.move_current_to(ctx, "best");
         } else if ctx.input(|i| i.key_pressed(Key::W)) {
-            self.worse_image(ctx);
+            self.move_current_to(ctx, "worse");
         } else if ctx.input(|i| i.key_pressed(Key::D)) {
-            self.delete_image(ctx);
+            self.move_current_to(ctx, "deleted");
         } else if ctx.input(|i| i.key_pressed(Key::U)) {
             self.undo_last_move(ctx);
         } else {
@@ -156,160 +156,97 @@ impl ImageViewerApp {
         }
     }
 
-    fn like_image(&mut self, ctx: &Context) {
+    pub(crate) fn move_current_to(&mut self, ctx: &Context, subdir: &str) {
         if self.image_files.is_empty() {
             return;
         }
 
         let current_path = self.image_files[self.current_index].clone();
-        if let Some(file_name) = current_path.file_name() {
-            let dest_dir = self.current_dir.join("best");
-            let dest_path = dest_dir.join(file_name);
-
-            if move_with_fallback(&current_path, &dest_path).is_ok() {
-                // Clean cache for moved image
-                self.clean_cache_for_moved_image(&current_path);
-
-                let prev_index = self.current_index;
-                self.last_moved = Some(LastMove::Single {
-                    source: current_path,
-                    dest: dest_path,
-                    label: "best".to_string(),
-                    index: prev_index,
-                });
-                self.image_files.remove(self.current_index);
-
-                if self.current_index >= self.image_files.len() && !self.image_files.is_empty() {
-                    self.current_index = 0;
-                }
-
-                self.set_status_message("Moved to best/", 3.0);
-
-                // Load next image automatically
-                if !self.image_files.is_empty() {
-                    self.load_current_image(ctx);
-                } else {
-                    self.current_image = None;
-                    self.current_metadata = None;
-                }
-            } else {
-                self.set_status_message("Error moving image", 3.0);
-            }
-        } else {
-            self.set_status_message("Invalid file name", 3.0);
-        }
-    }
-
-    fn worse_image(&mut self, ctx: &Context) {
-        if self.image_files.is_empty() {
+        let Some(file_name) = current_path.file_name() else {
+            self.set_status_message("Nombre de archivo inválido", 3.0);
+            return;
+        };
+        let dest_path = self.current_dir.join(subdir).join(file_name);
+        if dest_path.exists() {
+            let preview = truncate_preview(&file_name.to_string_lossy(), 30);
+            self.set_status_message(&format!("Ya existe en {subdir}/: {preview}"), 3.5);
             return;
         }
 
-        let current_path = self.image_files[self.current_index].clone();
-        if let Some(file_name) = current_path.file_name() {
-            let dest_dir = self.current_dir.join("worse");
-            let dest_path = dest_dir.join(file_name);
-
-            if move_with_fallback(&current_path, &dest_path).is_ok() {
-                // Clean cache for moved image
-                self.clean_cache_for_moved_image(&current_path);
-
-                let prev_index = self.current_index;
-                self.last_moved = Some(LastMove::Single {
-                    source: current_path,
-                    dest: dest_path,
-                    label: "worse".to_string(),
-                    index: prev_index,
-                });
-                self.image_files.remove(self.current_index);
-
-                if self.current_index >= self.image_files.len() && !self.image_files.is_empty() {
-                    self.current_index = 0;
-                }
-
-                self.set_status_message("Moved to worse/", 3.0);
-
-                // Load next image automatically
-                if !self.image_files.is_empty() {
-                    self.load_current_image(ctx);
-                } else {
-                    self.current_image = None;
-                    self.current_metadata = None;
-                }
-            } else {
-                self.set_status_message("Error moving image", 3.0);
-            }
-        } else {
-            self.set_status_message("Invalid file name", 3.0);
-        }
-    }
-
-    fn delete_image(&mut self, ctx: &Context) {
-        if self.image_files.is_empty() {
+        if move_with_fallback(&current_path, &dest_path).is_err() {
+            self.set_status_message(&format!("Error al mover a {subdir}/"), 3.0);
             return;
         }
 
-        let current_path = self.image_files[self.current_index].clone();
-        if let Some(file_name) = current_path.file_name() {
-            let dest_dir = self.current_dir.join("deleted");
-            let dest_path = dest_dir.join(file_name);
+        self.clean_cache_for_moved_image(&current_path);
+        let tag = self.tags.untag(&current_path);
+        let prev_index = self.current_index;
+        self.undo_stack.push(LastMove::Single {
+            source: current_path,
+            dest: dest_path,
+            label: subdir.to_string(),
+            index: prev_index,
+            tag,
+        });
+        self.image_files.remove(self.current_index);
 
-            if move_with_fallback(&current_path, &dest_path).is_ok() {
-                // Clean cache for moved image
-                self.clean_cache_for_moved_image(&current_path);
+        if self.current_index >= self.image_files.len() {
+            self.current_index = self.image_files.len().saturating_sub(1);
+        }
 
-                let prev_index = self.current_index;
-                self.last_moved = Some(LastMove::Single {
-                    source: current_path,
-                    dest: dest_path,
-                    label: "deleted".to_string(),
-                    index: prev_index,
-                });
-                self.image_files.remove(self.current_index);
+        self.set_status_message(&format!("Movida a {subdir}/"), 3.0);
 
-                if self.current_index >= self.image_files.len() && !self.image_files.is_empty() {
-                    self.current_index = 0;
-                }
-
-                self.set_status_message("Moved to deleted/", 3.0);
-
-                // Load next image automatically
-                if !self.image_files.is_empty() {
-                    self.load_current_image(ctx);
-                } else {
-                    self.current_image = None;
-                    self.current_metadata = None;
-                }
-            } else {
-                self.set_status_message("Error deleting image", 3.0);
+        if self.show_grid {
+            self.grid.scroll_to_selected = true;
+            if self.image_files.is_empty() {
+                self.current_image = None;
+                self.current_metadata = None;
             }
+        } else if !self.image_files.is_empty() {
+            self.load_current_image(ctx);
         } else {
-            self.set_status_message("Invalid file name", 3.0);
+            self.current_image = None;
+            self.current_metadata = None;
         }
     }
 
-    fn undo_last_move(&mut self, ctx: &Context) {
-        match self.last_moved.clone() {
+    pub(crate) fn undo_last_move(&mut self, ctx: &Context) {
+        match self.undo_stack.pop() {
             Some(LastMove::Single {
                 source,
                 dest,
                 label,
                 index,
+                tag,
             }) => {
                 if !dest.exists() {
-                    self.set_status_message("Image no longer exists", 3.0);
-                    self.last_moved = None;
+                    self.set_status_message("La imagen ya no existe en destino", 3.0);
+                } else if source.exists() {
+                    self.set_status_message("No se restauró: ya existe un archivo en origen", 3.5);
                 } else if move_with_fallback(&dest, &source).is_ok() {
+                    if let Some(slot) = tag {
+                        self.tags.assign(&source, slot);
+                    }
                     apply_undo_state(self, source, index);
-                    self.last_moved = None;
-                    self.load_current_image(ctx);
-                    self.set_status_message(&format!("Restored from {}/", label), 3.0);
+                    if self.show_grid {
+                        self.grid.scroll_to_selected = true;
+                    } else {
+                        self.load_current_image(ctx);
+                    }
+                    self.set_status_message(&format!("Restaurada desde {label}/"), 3.0);
                 } else {
-                    self.set_status_message("Error restoring image", 3.0);
+                    self.undo_stack.push(LastMove::Single {
+                        source,
+                        dest,
+                        label,
+                        index,
+                        tag,
+                    });
+                    self.set_status_message("Error al restaurar la imagen", 3.0);
                 }
             }
             Some(LastMove::Batch(moves)) => self.undo_tag_move(ctx, moves),
-            None => self.set_status_message("No image to undo", 3.0),
+            None => self.set_status_message("No hay movimientos para deshacer", 3.0),
         }
     }
 }
@@ -403,5 +340,104 @@ mod tests {
         assert_eq!(app.image_files[1], PathBuf::from("/tmp/b.jpg"));
         assert!(app.current_image.is_none());
         assert!(app.current_metadata.is_none());
+    }
+
+    fn temp_cull_dir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "img-viewer-cull-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn move_current_to_does_not_overwrite_existing_destination() {
+        let dir = temp_cull_dir("no-overwrite");
+        let src = dir.join("a.jpg");
+        let best_dir = dir.join("best");
+        std::fs::create_dir_all(&best_dir).unwrap();
+        std::fs::write(&src, "new").unwrap();
+        std::fs::write(best_dir.join("a.jpg"), "existing").unwrap();
+
+        let mut app = super::super::state::test_app(vec![src.clone()], 0);
+        app.current_dir = dir.clone();
+        let ctx = eframe::egui::Context::default();
+
+        app.move_current_to(&ctx, "best");
+
+        assert_eq!(app.image_files, vec![src.clone()]);
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), "new");
+        assert_eq!(
+            std::fs::read_to_string(best_dir.join("a.jpg")).unwrap(),
+            "existing"
+        );
+        assert!(app.undo_stack.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn multi_level_undo_restores_moves_and_tags_in_lifo_order() {
+        let dir = temp_cull_dir("multi-undo");
+        let a = dir.join("a.jpg");
+        let b = dir.join("b.jpg");
+        let c = dir.join("c.jpg");
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+        std::fs::write(&c, "c").unwrap();
+
+        let mut app = super::super::state::test_app(vec![a.clone(), b.clone(), c.clone()], 0);
+        app.current_dir = dir.clone();
+        app.show_grid = true;
+        app.tags.set_name(1, "Retrato").unwrap();
+        app.tags.assign(&a, 1);
+        let ctx = eframe::egui::Context::default();
+
+        app.move_current_to(&ctx, "best");
+        app.move_current_to(&ctx, "deleted");
+        assert_eq!(app.image_files, vec![c.clone()]);
+        assert_eq!(app.undo_stack.len(), 2);
+        assert!(
+            app.loading_requests.is_empty(),
+            "grid moves must not trigger full-res image loading"
+        );
+
+        app.undo_last_move(&ctx);
+        assert_eq!(app.image_files, vec![b.clone(), c.clone()]);
+        assert!(b.exists());
+
+        app.undo_last_move(&ctx);
+        assert_eq!(app.image_files, vec![a.clone(), b.clone(), c.clone()]);
+        assert!(a.exists());
+        assert_eq!(app.tags.tag_of(&a), Some(1));
+        assert!(app.undo_stack.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn moving_last_image_clamps_index_instead_of_wrapping_to_zero() {
+        let dir = temp_cull_dir("clamp-last");
+        let files: Vec<PathBuf> = ["a.jpg", "b.jpg", "c.jpg"]
+            .iter()
+            .map(|n| {
+                let p = dir.join(n);
+                std::fs::write(&p, n).unwrap();
+                p
+            })
+            .collect();
+
+        let mut app = super::super::state::test_app(files, 2);
+        app.current_dir = dir.clone();
+        app.show_grid = true;
+        let ctx = eframe::egui::Context::default();
+
+        app.move_current_to(&ctx, "worse");
+        assert_eq!(app.image_files.len(), 2);
+        assert_eq!(app.current_index, 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

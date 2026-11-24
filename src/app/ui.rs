@@ -49,7 +49,7 @@ impl eframe::App for ImageViewerApp {
                     if ui.button("Open Folder...").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_folder() {
                             self.tags.clear_assignments();
-                            self.last_moved = None;
+                            self.undo_stack.clear();
                             self.start_folder_load(path);
                         }
                         ui.close_menu();
